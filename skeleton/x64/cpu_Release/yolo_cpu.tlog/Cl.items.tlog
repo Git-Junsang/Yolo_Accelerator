@@ -1,0 +1,5 @@
+C:\skeleton\src\additionally.c;C:\skeleton\x64\cpu_Release\additionally.obj
+C:\skeleton\src\box.c;C:\skeleton\x64\cpu_Release\box.obj
+C:\skeleton\src\main.c;C:\skeleton\x64\cpu_Release\main.obj
+C:\skeleton\src\yolov2_forward_network.c;C:\skeleton\x64\cpu_Release\yolov2_forward_network.obj
+C:\skeleton\src\yolov2_forward_network_quantized.c;C:\skeleton\x64\cpu_Release\yolov2_forward_network_quantized.obj

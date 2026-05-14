@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Move-Item \"c:\\\\AIX Project\\\\yolohw\\\\sim\\\\yolo_engine_tb.v\" \"c:\\\\AIX Project\\\\yolohw\\\\src_backup\\\\yolo_engine_tb_old.v\" -Force)",
+      "PowerShell($f = \"c:\\\\AIX Project\\\\yolohw\\\\sim\\\\inout_data_sw\\\\log_feamap\\\\CONV00_output.hex\"; $cnt = \\(Get-Content $f | Measure-Object -Line\\).Lines; \"CONV00_output.hex lines: $cnt\"; $f2 = \"c:\\\\AIX Project\\\\yolohw\\\\sim\\\\inout_data_sw\\\\log_feamap\\\\CONV00_input.hex\"; $cnt2 = \\(Get-Content $f2 | Measure-Object -Line\\).Lines; \"CONV00_input.hex lines: $cnt2\"; $f3 = \"c:\\\\AIX Project\\\\yolohw\\\\sim\\\\inout_data_sw\\\\log_param\\\\CONV00_param_weight.hex\"; $cnt3 = \\(Get-Content $f3 | Measure-Object -Line\\).Lines; \"CONV00_param_weight.hex lines: $cnt3\"; $f4 = \"c:\\\\AIX Project\\\\yolohw\\\\sim\\\\inout_data_sw\\\\log_param\\\\CONV00_param_biases.hex\"; $cnt4 = \\(Get-Content $f4 | Measure-Object -Line\\).Lines; \"CONV00_param_biases.hex lines: $cnt4\")",
+      "PowerShell(Get-ChildItem \"c:\\\\AIX Project\\\\yolohw\\\\src\" -File | ForEach-Object { \"{0,-25} {1,8} bytes\" -f $_.Name, $_.Length })",
+      "PowerShell($mempath = \"C:\\\\Users\\\\Junsang\\\\.claude\\\\projects\\\\c--AIX-Project\\\\memory\"; if \\(Test-Path $mempath\\) { Get-ChildItem $mempath -File | Select-Object Name } else { \"Memory dir not found: $mempath\" })",
+      "PowerShell($mempath = \"C:\\\\Users\\\\Junsang\\\\.claude\\\\projects\\\\c--AIX-Project\\\\memory\"; Test-Path $mempath; if \\(Test-Path $mempath\\) { Get-ChildItem $mempath -File -Force | ForEach-Object { $_.Name } } else { New-Item -ItemType Directory -Force -Path $mempath | Out-Null; \"Created memory dir\" })",
+      "PowerShell($f = \"c:\\\\AIX Project\\\\yolohw\\\\src\\\\yolo_engine.v\"; $lines = \\(Get-Content $f | Measure-Object -Line\\).Lines; \"lines: $lines\")"
+    ]
+  }
+}

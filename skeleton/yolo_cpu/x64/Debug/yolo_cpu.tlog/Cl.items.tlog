@@ -1,0 +1,5 @@
+C:\skeleton\src\additionally.c;C:\skeleton\yolo_cpu\x64\Debug\additionally.obj
+C:\skeleton\src\box.c;C:\skeleton\yolo_cpu\x64\Debug\box.obj
+C:\skeleton\src\main.c;C:\skeleton\yolo_cpu\x64\Debug\main.obj
+C:\skeleton\src\yolov2_forward_network.c;C:\skeleton\yolo_cpu\x64\Debug\yolov2_forward_network.obj
+C:\skeleton\src\yolov2_forward_network_quantized.c;C:\skeleton\yolo_cpu\x64\Debug\yolov2_forward_network_quantized.obj
