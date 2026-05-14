@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(\"=== yolohw/ directories ===\"; Get-ChildItem \"c:\\\\AIX Project\\\\yolohw\" -Directory | ForEach-Object { $_.Name }; \"`n=== yolohw/src files ===\"; Get-ChildItem \"c:\\\\AIX Project\\\\yolohw\\\\src\" -File | ForEach-Object { $_.Name }; \"`n=== yolohw/sim files ===\"; Get-ChildItem \"c:\\\\AIX Project\\\\yolohw\\\\sim\" -File | ForEach-Object { $_.Name }; \"`n=== yolohw/src_backup files \\(if exists\\) ===\"; if \\(Test-Path \"c:\\\\AIX Project\\\\yolohw\\\\src_backup\"\\) { Get-ChildItem \"c:\\\\AIX Project\\\\yolohw\\\\src_backup\" -File | ForEach-Object { $_.Name } } else { \"\\(none\\)\" })",
+      "PowerShell(\"---\")",
+      "PowerShell(foreach \\($f in @\\(\"pool_tb.v\",\"pool_s1_tb.v\",\"upsample_tb.v\"\\)\\) { $p = \"c:\\\\AIX Project\\\\yolohw\\\\sim\\\\$f\"; if \\(Test-Path $p\\) { $sz = \\(Get-Item $p\\).Length; $first = \\(Get-Content $p -TotalCount 5\\) -join \" | \"; \"$f  [$sz bytes]  $first\" } })"
+    ]
+  }
+}
