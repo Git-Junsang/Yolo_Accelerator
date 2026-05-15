@@ -7,13 +7,13 @@
 | Phase | 내용 | 상태 |
 |-------|------|------|
 | **Phase 1** | MicroBlaze 제외 RTL 합성 완료 (yolo_engine 단독 22-layer 자동 추론) | ✅ 완료 |
-| Phase 2 | TB 일괄 검증 + 정확도 튜닝 (shift 실측) | 대기 |
+| **Phase 2** | TB 일괄 검증 + 정확도 튜닝 (shift 실측, conv_top_tb 0 mismatch, yolo_engine_tb 22-layer 완주) | ✅ 완료 |
 | Phase 3 | MicroBlaze + UART + DDR2 통합 | 대기 |
 | Phase 4 | 비트스트림 + 보드 데모 + 측정 | 대기 |
 
 ## 1. 하드웨어 / 소프트웨어 역할 분담
 
-- **하드웨어 (RTL, Phase 1 완료)**: Conv(3×3, 1×1), Bias + Descaling, ReLU, MaxPool(stride 2 / stride 1), Upsample, Route(DMA 주소 제어)
+- **하드웨어 (RTL, Phase 2 완료)**: Conv(3×3, 1×1), Bias + Descaling, ReLU, MaxPool(stride 2 / stride 1), Upsample, Route(DMA 주소 제어)
 - **소프트웨어 (Phase 3 MicroBlaze + Host PC)**: 가속기 제어, DMA 트리거, YOLO 후처리 (Sigmoid, Softmax, NMS)
 
 ## 2. 전체 네트워크 구조 (22 Layers)
@@ -62,7 +62,7 @@ yolo_engine.v ★ TOP — 22-layer 자동 추론 FSM (14 states)
 │   └── mac_kern.v                ← 144-MAC + 4× accumulator + 4× post_process
 │       ├── mac_stack.v           ← 36 mul × 4 spatial = 144 MAC
 │       │   ├── mul_dual.v × ~72  (DSP48 packing, 2 곱셈 동시)
-│       │   │   └── mul.v
+│       │   │   └── mul.v         ← w: INT8 signed, x: INT8 signed (Phase 2 수정: UINT8→INT8)
 │       │   └── add_tree_36in.v × 4
 │       └── post_process.v × 4    ← bias + ReLU + arith shift + UINT8 clip
 │

@@ -148,7 +148,7 @@ void forward_convolutional_layer_q(network net, layer l, network_state state)
     if (run_single_image_test) {
         // Input Feature Map (IFM)
         char file_input_femap[100];
-        snprintf(file_input_femap, sizeof(file_input_femap), "C:/skeleton/bin/log_feamap/CONV%02d_input.hex", state.index);
+        snprintf(file_input_femap, sizeof(file_input_femap), "log_feamap/CONV%02d_input.hex", state.index);
         FILE* fp = fopen(file_input_femap, "w");
     
         // Data Format: [Channel, Width, Height]        
@@ -216,7 +216,7 @@ void forward_convolutional_layer_q(network net, layer l, network_state state)
             }
         }
         char file_output_femap[100];
-        snprintf(file_output_femap, sizeof(file_output_femap), "C:/skeleton/bin/log_feamap/CONV%02d_output.hex", state.index);
+        snprintf(file_output_femap, sizeof(file_output_femap), "log_feamap/CONV%02d_output.hex", state.index);
         FILE* fp = fopen(file_output_femap, "w");    
         // Data Format: [Channel, Width, Height]
         for (int chn = 0; chn < l.n; chn++) {           // OFM: Channel/index of an feature map
@@ -388,9 +388,9 @@ void save_quantized_model(network net) {
             char biasfile   [100];
             char scalefile  [100];
 
-            sprintf(weightfile  , "C:/skeleton/bin//log_param/CONV%02d_param_weight.hex", j);
-            sprintf(biasfile    , "C:/skeleton/bin//log_param/CONV%02d_param_biases.hex", j);
-            sprintf(scalefile   , "C:/skeleton/bin//log_param/CONV%02d_param_scales.hex", j);
+            sprintf(weightfile  , "log_param/CONV%02d_param_weight.hex", j);
+            sprintf(biasfile    , "log_param/CONV%02d_param_biases.hex", j);
+            sprintf(scalefile   , "log_param/CONV%02d_param_scales.hex", j);
             FILE* fp_w = fopen(weightfile, "w");
             FILE* fp_b = fopen(biasfile, "w");
             FILE* fp_s = fopen(scalefile, "w");

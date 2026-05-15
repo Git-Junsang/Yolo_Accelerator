@@ -1,0 +1,3 @@
+/data/2026 CAU/AIX2026/git/Yolo_Accelerator/skeleton/bin/test03.jpg
+/data/2026 CAU/AIX2026/git/Yolo_Accelerator/skeleton/bin/test02.jpg
+/data/2026 CAU/AIX2026/git/Yolo_Accelerator/skeleton/bin/test01.jpg

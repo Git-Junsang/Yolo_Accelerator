@@ -184,27 +184,27 @@ module yolo_engine #(
         lyr_wgt_base    = 10'd0; lyr_bias_base   = 12'd0;
         lyr_ci_groups_r = 8'd1;
         case (layer_idx)
-            5'd0:  begin lyr_ofm_w=12'd256; lyr_ofm_h=12'd256; lyr_ci=12'd3;   lyr_co_total=12'd16;  lyr_mode=1'b0; lyr_acc_len=8'd1;   lyr_shift=5'd13; lyr_wgt_base=10'd0;   lyr_bias_base=12'd0;    lyr_conv_en=1'b1; lyr_ci_groups_r=8'd1;   end
+            5'd0:  begin lyr_ofm_w=12'd256; lyr_ofm_h=12'd256; lyr_ci=12'd3;   lyr_co_total=12'd16;  lyr_mode=1'b0; lyr_acc_len=8'd1;   lyr_shift=5'd8;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd0;    lyr_conv_en=1'b1; lyr_ci_groups_r=8'd1;   end
             5'd1:  begin lyr_ofm_w=12'd128; lyr_ofm_h=12'd128; lyr_ci=12'd16;  lyr_co_total=12'd16;  lyr_pool_en=1'b1; lyr_pool_stride=1'b0; lyr_ci_groups_r=8'd4;   end
-            5'd2:  begin lyr_ofm_w=12'd128; lyr_ofm_h=12'd128; lyr_ci=12'd16;  lyr_co_total=12'd32;  lyr_mode=1'b0; lyr_acc_len=8'd4;   lyr_shift=5'd14; lyr_wgt_base=10'd16;  lyr_bias_base=12'd16;   lyr_conv_en=1'b1; lyr_ci_groups_r=8'd4;   end
+            5'd2:  begin lyr_ofm_w=12'd128; lyr_ofm_h=12'd128; lyr_ci=12'd16;  lyr_co_total=12'd32;  lyr_mode=1'b0; lyr_acc_len=8'd4;   lyr_shift=5'd6;  lyr_wgt_base=10'd16;  lyr_bias_base=12'd16;   lyr_conv_en=1'b1; lyr_ci_groups_r=8'd4;   end
             5'd3:  begin lyr_ofm_w=12'd64;  lyr_ofm_h=12'd64;  lyr_ci=12'd32;  lyr_co_total=12'd32;  lyr_pool_en=1'b1; lyr_pool_stride=1'b0; lyr_ci_groups_r=8'd8;   end
-            5'd4:  begin lyr_ofm_w=12'd64;  lyr_ofm_h=12'd64;  lyr_ci=12'd32;  lyr_co_total=12'd64;  lyr_mode=1'b0; lyr_acc_len=8'd8;   lyr_shift=5'd14; lyr_wgt_base=10'd144; lyr_bias_base=12'd48;   lyr_conv_en=1'b1; lyr_ci_groups_r=8'd8;   end
+            5'd4:  begin lyr_ofm_w=12'd64;  lyr_ofm_h=12'd64;  lyr_ci=12'd32;  lyr_co_total=12'd64;  lyr_mode=1'b0; lyr_acc_len=8'd8;   lyr_shift=5'd6;  lyr_wgt_base=10'd144; lyr_bias_base=12'd48;   lyr_conv_en=1'b1; lyr_ci_groups_r=8'd8;   end
             5'd5:  begin lyr_ofm_w=12'd32;  lyr_ofm_h=12'd32;  lyr_ci=12'd64;  lyr_co_total=12'd64;  lyr_pool_en=1'b1; lyr_pool_stride=1'b0; lyr_ci_groups_r=8'd16;  end
-            5'd6:  begin lyr_ofm_w=12'd32;  lyr_ofm_h=12'd32;  lyr_ci=12'd64;  lyr_co_total=12'd128; lyr_mode=1'b0; lyr_acc_len=8'd16;  lyr_shift=5'd15; lyr_wgt_base=10'd0;   lyr_bias_base=12'd112;  lyr_conv_en=1'b1; lyr_ci_groups_r=8'd16;  end
+            5'd6:  begin lyr_ofm_w=12'd32;  lyr_ofm_h=12'd32;  lyr_ci=12'd64;  lyr_co_total=12'd128; lyr_mode=1'b0; lyr_acc_len=8'd16;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd112;  lyr_conv_en=1'b1; lyr_ci_groups_r=8'd16;  end
             5'd7:  begin lyr_ofm_w=12'd16;  lyr_ofm_h=12'd16;  lyr_ci=12'd128; lyr_co_total=12'd128; lyr_pool_en=1'b1; lyr_pool_stride=1'b0; lyr_ci_groups_r=8'd32;  end
-            5'd8:  begin lyr_ofm_w=12'd16;  lyr_ofm_h=12'd16;  lyr_ci=12'd128; lyr_co_total=12'd256; lyr_mode=1'b0; lyr_acc_len=8'd32;  lyr_shift=5'd15; lyr_wgt_base=10'd0;   lyr_bias_base=12'd240;  lyr_conv_en=1'b1; lyr_ci_groups_r=8'd32;  end
+            5'd8:  begin lyr_ofm_w=12'd16;  lyr_ofm_h=12'd16;  lyr_ci=12'd128; lyr_co_total=12'd256; lyr_mode=1'b0; lyr_acc_len=8'd32;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd240;  lyr_conv_en=1'b1; lyr_ci_groups_r=8'd32;  end
             5'd9:  begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd256; lyr_co_total=12'd256; lyr_pool_en=1'b1; lyr_pool_stride=1'b0; lyr_ci_groups_r=8'd64;  end
-            5'd10: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd256; lyr_co_total=12'd512; lyr_mode=1'b0; lyr_acc_len=8'd64;  lyr_shift=5'd16; lyr_wgt_base=10'd0;   lyr_bias_base=12'd496;  lyr_conv_en=1'b1; lyr_ci_groups_r=8'd64;  end
+            5'd10: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd256; lyr_co_total=12'd512; lyr_mode=1'b0; lyr_acc_len=8'd64;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd496;  lyr_conv_en=1'b1; lyr_ci_groups_r=8'd64;  end
             5'd11: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd512; lyr_co_total=12'd512; lyr_pool_en=1'b1; lyr_pool_stride=1'b1; lyr_ci_groups_r=8'd128; end
-            5'd12: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd512; lyr_co_total=12'd256; lyr_mode=1'b1; lyr_acc_len=8'd128; lyr_shift=5'd16; lyr_wgt_base=10'd0;   lyr_bias_base=12'd1008; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd128; end
-            5'd13: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd256; lyr_co_total=12'd512; lyr_mode=1'b0; lyr_acc_len=8'd64;  lyr_shift=5'd16; lyr_wgt_base=10'd0;   lyr_bias_base=12'd1264; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd64;  end
-            5'd14: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd512; lyr_co_total=12'd195; lyr_mode=1'b1; lyr_acc_len=8'd128; lyr_shift=5'd14; lyr_wgt_base=10'd0;   lyr_bias_base=12'd1776; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd128; end
+            5'd12: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd512; lyr_co_total=12'd256; lyr_mode=1'b1; lyr_acc_len=8'd128; lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd1008; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd128; end
+            5'd13: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd256; lyr_co_total=12'd512; lyr_mode=1'b0; lyr_acc_len=8'd64;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd1264; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd64;  end
+            5'd14: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd512; lyr_co_total=12'd195; lyr_mode=1'b1; lyr_acc_len=8'd128; lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd1776; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd128; end
             5'd15: begin                                                                                                                                                                                            end
             5'd16: begin                                                                                                                                                                                            end
-            5'd17: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd256; lyr_co_total=12'd128; lyr_mode=1'b1; lyr_acc_len=8'd64;  lyr_shift=5'd14; lyr_wgt_base=10'd0;   lyr_bias_base=12'd1971; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd64;  end
+            5'd17: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd256; lyr_co_total=12'd128; lyr_mode=1'b1; lyr_acc_len=8'd64;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd1971; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd64;  end
             5'd18: begin lyr_ofm_w=12'd16;  lyr_ofm_h=12'd16;  lyr_ci=12'd128; lyr_co_total=12'd128;                                                                                                                end
             5'd19: begin lyr_ofm_w=12'd16;  lyr_ofm_h=12'd16;  lyr_ci=12'd384; lyr_co_total=12'd384;                                                                                                                end
-            5'd20: begin lyr_ofm_w=12'd16;  lyr_ofm_h=12'd16;  lyr_ci=12'd384; lyr_co_total=12'd195; lyr_mode=1'b1; lyr_acc_len=8'd96;  lyr_shift=5'd14; lyr_wgt_base=10'd0;   lyr_bias_base=12'd2099; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd96;  end
+            5'd20: begin lyr_ofm_w=12'd16;  lyr_ofm_h=12'd16;  lyr_ci=12'd384; lyr_co_total=12'd195; lyr_mode=1'b1; lyr_acc_len=8'd96;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd2099; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd96;  end
             5'd21: begin                                                                                                                                                                                            end
             default: ;
         endcase

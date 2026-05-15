@@ -1,6 +1,6 @@
 # YOLOv2 FPGA Accelerator — 팀 베타트론
 
-[![Phase](https://img.shields.io/badge/Phase-1%20RTL%20Complete-brightgreen)]()
+[![Phase](https://img.shields.io/badge/Phase-2%20TB%20Verified-brightgreen)]()
 [![Board](https://img.shields.io/badge/Board-Nexys%20A7--100T-blue)]()
 [![Tool](https://img.shields.io/badge/Vivado-2020.2+-orange)]()
 [![License](https://img.shields.io/badge/License-Academic-lightgrey)]()
@@ -346,7 +346,7 @@ ST_DMA_OFM_WAIT                                   │
 | Phase | 내용 | 상태 |
 |-------|------|------|
 | **Phase 1** | **MicroBlaze 제외 RTL 합성 완료** (yolo_engine 단독 22-layer 자동 추론) | ✅ **완료** |
-| Phase 2 | TB 일괄 검증 + 정확도 튜닝 (shift 실측, mAP 확인) | ⏳ 대기 |
+| **Phase 2** | **TB 일괄 검증 + 정확도 튜닝** (shift 실측, conv_top_tb 0 mismatch, yolo_engine_tb 22-layer 완주) | ✅ **완료** |
 | Phase 3 | MicroBlaze + UART + DDR2 통합 | ⏳ 대기 |
 | Phase 4 | 비트스트림 + 보드 데모 + 측정 | ⏳ 대기 |
 
@@ -361,12 +361,13 @@ ST_DMA_OFM_WAIT                                   │
 - Per-layer DRAM offset table (L0~L20)
 - 블록 단위 TB 4 개 작성 (conv_top / max_pool / max_pool_s1 / upsample)
 
-### ⏳ Phase 2 남은 작업
+### ✅ Phase 2 완료 사항
 
-- 블록 TB 4 개 실행 + mismatch 수정
-- `yolo_engine_tb.v` full integration 검증 (per-layer offset 갱신)
-- Layer shift 실측값 적용 (1차 추정 13~16 → `CONV*_param_scales.hex` 측정)
-- (선택) L0~L4 IFM sliding window DMA reload — 큰 layer 전체 row 검증 시 필요
+- **`mul.v` IFM 부호 수정**: `$signed({1'b0,x})` → `$signed(x)` (UINT8 → INT8 signed). conv_top_tb mismatch 31 → **0**
+- **`yolo_engine.v` lyr_shift 전수 수정**: scale 파일 실측 적용 (L0: 8, L2~L20: 6). yolo_engine_tb OFM all-zero → **non-zero 확인**
+- **`skeleton/src/additionally.c`** Windows 하드코딩 경로 → 상대경로 (Linux make 빌드 정상화)
+- SW 골든 hex 단일 실행 기준으로 재생성 및 `yolohw/sim/inout_data_sw/` 동기화
+- `yolo_engine_tb`: 22-layer 완주 + network_done 수신 확인
 
 ### ⏳ Phase 3 남은 작업
 
@@ -485,4 +486,4 @@ Phase 를 건너뛰지 않습니다. Phase 2 mismatch 가 해결되지 않은 �
 
 ---
 
-**Last updated**: Phase 1 완료 시점 (RTL 19 파일 + TB 5 파일 + 디렉토리 정리 완료)
+**Last updated**: Phase 2 완료 시점 (2026-05-15 — mul.v INT8 수정, lyr_shift 실측 적용, yolo_engine_tb 22-layer 완주 확인)

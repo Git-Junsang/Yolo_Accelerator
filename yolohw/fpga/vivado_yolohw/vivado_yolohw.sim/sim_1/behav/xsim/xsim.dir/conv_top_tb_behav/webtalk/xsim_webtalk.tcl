@@ -1,6 +1,6 @@
 webtalk_init -webtalk_dir Z:/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/fpga/vivado_yolohw/vivado_yolohw.sim/sim_1/behav/xsim/xsim.dir/conv_top_tb_behav/webtalk/
 webtalk_register_client -client project
-webtalk_add_data -client project -key date_generated -value "Fri May 15 17:58:46 2026" -context "software_version_and_target_device"
+webtalk_add_data -client project -key date_generated -value "Fri May 15 22:54:19 2026" -context "software_version_and_target_device"
 webtalk_add_data -client project -key product_version -value "XSIM v2021.1 (64-bit)" -context "software_version_and_target_device"
 webtalk_add_data -client project -key build_version -value "3247384" -context "software_version_and_target_device"
 webtalk_add_data -client project -key os_platform -value "WIN64" -context "software_version_and_target_device"
@@ -14,7 +14,7 @@ webtalk_add_data -client project -key target_package -value "not_applicable" -co
 webtalk_add_data -client project -key target_speed -value "not_applicable" -context "software_version_and_target_device"
 webtalk_add_data -client project -key random_id -value "a4093bb6-bd18-4152-a427-19a8380efea7" -context "software_version_and_target_device"
 webtalk_add_data -client project -key project_id -value "099edbdc047e40939906dc948bc5b4e6" -context "software_version_and_target_device"
-webtalk_add_data -client project -key project_iteration -value "13" -context "software_version_and_target_device"
+webtalk_add_data -client project -key project_iteration -value "21" -context "software_version_and_target_device"
 webtalk_add_data -client project -key os_name -value "Windows Server 2016 or Windows 10" -context "user_environment"
 webtalk_add_data -client project -key os_release -value "major release  (build 9200)" -context "user_environment"
 webtalk_add_data -client project -key cpu_name -value "AMD Ryzen 7 7800X3D 8-Core Processor           " -context "user_environment"
@@ -27,7 +27,7 @@ webtalk_add_data -client xsim -key Command -value "xsim" -context "xsim\\command
 webtalk_add_data -client xsim -key trace_waveform -value "true" -context "xsim\\usage"
 webtalk_add_data -client xsim -key runtime -value "2624025 ns" -context "xsim\\usage"
 webtalk_add_data -client xsim -key iteration -value "0" -context "xsim\\usage"
-webtalk_add_data -client xsim -key Simulation_Time -value "46.05_sec" -context "xsim\\usage"
-webtalk_add_data -client xsim -key Simulation_Memory -value "33128_KB" -context "xsim\\usage"
-webtalk_transmit -clientid 1419009678 -regid "" -xml Z:/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/fpga/vivado_yolohw/vivado_yolohw.sim/sim_1/behav/xsim/xsim.dir/conv_top_tb_behav/webtalk/usage_statistics_ext_xsim.xml -html Z:/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/fpga/vivado_yolohw/vivado_yolohw.sim/sim_1/behav/xsim/xsim.dir/conv_top_tb_behav/webtalk/usage_statistics_ext_xsim.html -wdm Z:/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/fpga/vivado_yolohw/vivado_yolohw.sim/sim_1/behav/xsim/xsim.dir/conv_top_tb_behav/webtalk/usage_statistics_ext_xsim.wdm -intro "<H3>XSIM Usage Report</H3><BR>"
+webtalk_add_data -client xsim -key Simulation_Time -value "40.22_sec" -context "xsim\\usage"
+webtalk_add_data -client xsim -key Simulation_Memory -value "33984_KB" -context "xsim\\usage"
+webtalk_transmit -clientid 501911267 -regid "" -xml Z:/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/fpga/vivado_yolohw/vivado_yolohw.sim/sim_1/behav/xsim/xsim.dir/conv_top_tb_behav/webtalk/usage_statistics_ext_xsim.xml -html Z:/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/fpga/vivado_yolohw/vivado_yolohw.sim/sim_1/behav/xsim/xsim.dir/conv_top_tb_behav/webtalk/usage_statistics_ext_xsim.html -wdm Z:/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/fpga/vivado_yolohw/vivado_yolohw.sim/sim_1/behav/xsim/xsim.dir/conv_top_tb_behav/webtalk/usage_statistics_ext_xsim.wdm -intro "<H3>XSIM Usage Report</H3><BR>"
 webtalk_terminate

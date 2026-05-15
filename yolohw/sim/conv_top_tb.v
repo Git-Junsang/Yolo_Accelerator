@@ -251,6 +251,16 @@ module conv_top_tb;
         end
         $display("[conv_top_tb] IFM preloaded (4 rows, cyclic-mapped)");
 
+        // ---- DBG_BRAM: phys line 2 (IFM row2) 끝부분 정적 덤프 ----
+        // entry layout: byte b = col_local*4 + ch_local (128-bit = 4col × 4ch)
+        // addr=62 → IFM row2 col248..251
+        //   col249 ch1: col_local=1, ch=1 → b=5 → bits[47:40]
+        $display("[DBG_BRAM] g_line[2].mem[61]=%h  (IFM row2 col244..247)", u_line_buf.g_line[2].mem[61]);
+        $display("[DBG_BRAM] g_line[2].mem[62]=%h  (IFM row2 col248..251)", u_line_buf.g_line[2].mem[62]);
+        $display("[DBG_BRAM] g_line[2].mem[63]=%h  (IFM row2 col252..255)", u_line_buf.g_line[2].mem[63]);
+        $display("[DBG_BRAM] IFM[ch1][row2][col249] from BRAM = 0x%02h  (expect 0x80=128)",
+                 u_line_buf.g_line[2].mem[62][47:40]);
+
         // 로드 검증 덤프
         dump_wgt_bias;
         $display("[DBG] gold[f=0,row=0,col=0]=0x%02h  gold[f=0,row=0,col=1]=0x%02h",
@@ -317,6 +327,13 @@ module conv_top_tb;
                             if (mismatch_cnt < 16) begin
                                 $display("[MISMATCH] f=%0d col=%0d sub=%0d  hw=0x%02h  gold=0x%02h",
                                          fi, col, sub, hwb, gldb);
+                                // sub=2,3 (row1) col 122~127 구간: IFM row2 끝부분 BRAM 확인
+                                if ((sub==2||sub==3) && col>=122 && col<=127) begin
+                                    $display("  [MM_BRAM] g_line[2][62]=%h (row2 col248..251)",
+                                             u_line_buf.g_line[2].mem[62]);
+                                    $display("  [MM_BRAM] IFM[ch1][row2][col249]=0x%02h (expect 0x80)",
+                                             u_line_buf.g_line[2].mem[62][47:40]);
+                                end
                             end
                             mismatch_cnt = mismatch_cnt + 1;
                         end
@@ -368,6 +385,38 @@ module conv_top_tb;
             $display("-----------------------------------");
         end
     endtask
+
+    //--------------------------------------------------------------
+    // DBG Level 2: col 요청 122~127 구간 IFM 출력 2사이클 후 캡처
+    //   파이프라인: 요청(T) → BRAM+pipeline_reg 업데이트(T+1) → 출력레지스터(T+2)
+    //   ifm_10[143:136] = ci=1,ky=2,kx=2 → win[row3][col2][ch1] = IFM[ch1][row2][col=req*2-1+2]
+    //   ifm_11[135:128] = ci=1,ky=2,kx=1 → win[row3][col2][ch1] (kw+1=2, 동일 IFM 위치)
+    //   col_req=124 시: 두 값 모두 IFM[ch1][row2][col249] = 0x80(128) 이어야 함
+    //--------------------------------------------------------------
+    reg [11:0] dbg_col_d1, dbg_col_d2;
+    reg        dbg_en_d1,  dbg_en_d2;
+    initial begin
+        dbg_col_d1 = 12'd0; dbg_col_d2 = 12'd0;
+        dbg_en_d1  = 1'b0;  dbg_en_d2  = 1'b0;
+    end
+
+    always @(posedge clk) begin : dbg_ifm2
+        // 2-stage shift register
+        dbg_en_d2  <= dbg_en_d1;
+        dbg_col_d2 <= dbg_col_d1;
+        dbg_en_d1  <= (conv_ifm_re
+                       && conv_ifm_col >= 12'd122
+                       && conv_ifm_col <= 12'd127
+                       && conv_ifm_row == 12'd0);
+        dbg_col_d1 <= conv_ifm_col;
+
+        if (dbg_en_d2) begin
+            $display("[DBG_IFM2] col_req=%0d  ifm10.ci1.ky2.kx2=0x%02h  ifm11.ci1.ky2.kx1=0x%02h  (expect 0x80 when col_req=124)",
+                     dbg_col_d2, ifm_10[143:136], ifm_11[135:128]);
+            $display("[DBG_IFM2] col_req=%0d  ifm10[143:0]=%h",
+                     dbg_col_d2, ifm_10[143:0]);
+        end
+    end
 
     //--------------------------------------------------------------
     // Watchdog

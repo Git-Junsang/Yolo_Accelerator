@@ -3719,12 +3719,9 @@ void validate_detector_map(char *datacfg, char *cfgfile, char *weightfile, float
     char *difficult_valid_images = option_find_str(options, "difficult", NULL);
     char *name_list = option_find_str(options, "names", "yolohw.names");
 #else			// 2022.02.19: Fixed the directories for debugging the code on Windows
-    char* valid_images = option_find_str(options, "valid", "C:\\skeleton\\bin\\dataset\\target.txt");
+    char* valid_images = option_find_str(options, "valid", "dataset/target.txt");
     char* difficult_valid_images = option_find_str(options, "difficult", NULL);
-    char* name_list = option_find_str(options, "names", "C:\\skeleton\\bin\\yolohw.names");
-    //char* valid_images = option_find_str(options, "valid", "bin/dataset/target.txt");
-    //char* difficult_valid_images = option_find_str(options, "difficult", NULL);
-    //char* name_list = option_find_str(options, "names", "bin/yolohw.names");
+    char* name_list = option_find_str(options, "names", "yolohw.names");
 #endif 
     char **names = get_labels(name_list);
     char *mapf = option_find_str(options, "map", 0);
