@@ -1,0 +1,25 @@
+# compile verilog/system verilog design source files
+verilog xil_defaultlib  -i "../../../../../../src" \
+"../../../../../../src/add_tree_36in.v" \
+"../../../../../../src/axi_dma_rd.v" \
+"../../../../../../src/axi_dma_wr.v" \
+"../../../../../../src/conv_top.v" \
+"../../../../../../src/dpram_wrapper.v" \
+"../../../../../../src/gbuff_param.v" \
+"../../../../../../src/ifm_line_buf.v" \
+"../../../../../../src/mac_kern.v" \
+"../../../../../../src/mac_stack.v" \
+"../../../../../../src/max_pool_s1_unit.v" \
+"../../../../../../src/max_pool_unit.v" \
+"../../../../../../src/mul.v" \
+"../../../../../../src/post_process.v" \
+"../../../../../../src/upsample_unit.v" \
+"../../../../../../src/yolo_engine.v" \
+"../../../../../../src/yolo_engine_axi.v" \
+"../../../../../../sim/yolo_engine_tb.v" \
+
+# compile glbl module
+verilog xil_defaultlib "glbl.v"
+
+# Do not sort compile order
+nosort

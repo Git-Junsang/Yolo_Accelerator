@@ -6,7 +6,19 @@
       "PowerShell(Get-ChildItem \"c:\\\\AIX Project\\\\yolohw\\\\src\" -File | ForEach-Object { \"{0,-25} {1,8} bytes\" -f $_.Name, $_.Length })",
       "PowerShell($mempath = \"C:\\\\Users\\\\Junsang\\\\.claude\\\\projects\\\\c--AIX-Project\\\\memory\"; if \\(Test-Path $mempath\\) { Get-ChildItem $mempath -File | Select-Object Name } else { \"Memory dir not found: $mempath\" })",
       "PowerShell($mempath = \"C:\\\\Users\\\\Junsang\\\\.claude\\\\projects\\\\c--AIX-Project\\\\memory\"; Test-Path $mempath; if \\(Test-Path $mempath\\) { Get-ChildItem $mempath -File -Force | ForEach-Object { $_.Name } } else { New-Item -ItemType Directory -Force -Path $mempath | Out-Null; \"Created memory dir\" })",
-      "PowerShell($f = \"c:\\\\AIX Project\\\\yolohw\\\\src\\\\yolo_engine.v\"; $lines = \\(Get-Content $f | Measure-Object -Line\\).Lines; \"lines: $lines\")"
+      "PowerShell($f = \"c:\\\\AIX Project\\\\yolohw\\\\src\\\\yolo_engine.v\"; $lines = \\(Get-Content $f | Measure-Object -Line\\).Lines; \"lines: $lines\")",
+      "Bash(iverilog -V)",
+      "Bash(find /usr /opt /home /tools -name \"iverilog\" 2>/dev/null | head -5 *)",
+      "Read(//usr/**)",
+      "Bash(xxd \"/data/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/sim/inout_data_sw/log_feamap/CONV00_input.hex\")",
+      "Bash(xxd \"/data/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/sim/inout_data_sw/log_param/CONV00_param_weight.hex\")",
+      "Bash(xxd \"/data/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/sim/inout_data_sw/log_param/CONV00_param_biases.hex\")",
+      "Bash(xxd \"/data/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/sim/inout_data_sw/log_feamap/CONV00_output.hex\")",
+      "Bash(sed -n 1,6p '/data/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/sim/inout_data_sw/log_feamap/CONV00_input.hex')",
+      "Bash(sed -n 257,262p '/data/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/sim/inout_data_sw/log_feamap/CONV00_input.hex')",
+      "Bash(sed -n 65537,65542p '/data/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/sim/inout_data_sw/log_feamap/CONV00_input.hex')",
+      "Bash(sed -n 65793,65798p '/data/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/sim/inout_data_sw/log_feamap/CONV00_input.hex')",
+      "Bash(sed -n 131073,131078p '/data/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/sim/inout_data_sw/log_feamap/CONV00_input.hex')"
     ]
   }
 }

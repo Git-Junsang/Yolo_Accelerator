@@ -128,13 +128,20 @@ module conv_top(
 
     //----------------------------------------------------------------
     // mac_kern 인스턴스 — 1-cycle delayed vld (BRAM read latency 보정)
-    //   ST_LOAD cycle 의 wgt_addr 발사 → 다음 cycle (ST_RUN 1st) wgt_data 도착
-    //   mac_vld_d 도 ST_LOAD 다음 cycle 에 high 가 되어야 entry 0 누적 포함
+    //   ST_RUN 만 포함: q_total 정확히 일치 (ST_LOAD 포함 시 extra pulse 발생).
+    //
+    //   IFM 정렬 원리 (look-ahead 와 pipeline_reg 의 역할):
+    //     ST_LOAD (i_cb=col_idx): col=0 BRAM 요청 → posedge+1 에 phys_ent_a=data(col=0)
+    //                              pipeline_reg 에 offset(col=0) 저장
+    //     ST_RUN K=0 (i_cb=lah_col=1): col=1 요청 — K=1 을 위한 사전 발사.
+    //       ifm00_w = window(col=0) (phys_ent_a=data(col=0) + offset_r=offset(col=0))
+    //       → output_reg 에 window(col=0) 저장
+    //     mac_vld_d fires at ST_RUN K=0+1 cycle → mac_kern at K=0 에 window(col=0) 도착 ✓
     //----------------------------------------------------------------
     reg mac_vld_d;
     always @(posedge clk or negedge rstn) begin
         if (!rstn) mac_vld_d <= 1'b0;
-        else       mac_vld_d <= (cstate == ST_LOAD) || (cstate == ST_RUN);
+        else       mac_vld_d <= (cstate == ST_RUN);
     end
 
     wire [31:0] mac_pixel;
@@ -291,10 +298,21 @@ module conv_top(
     assign o_pixel_vld = mac_pixel_vld;
     assign o_ofm_addr  = frame_offset_r + {2'd0, out_cnt};
 
+    // IFM look-ahead: ifm_line_buf 의 BRAM read latency = 1 cycle.
+    //   ST_LOAD: 현재 (row=0, col=0, acc=0) 발사 → ST_RUN 첫 cycle 에 데이터 도착.
+    //   ST_RUN:  다음 cycle 의 (row, col, acc) 를 미리 발사하여 latency 보상.
+    wire        lah_acc_last = (acc_cyc  == i_acc_len   - 8'd1);
+    wire        lah_col_last = (col_idx  == i_ofm_w_half - 12'd1);
+    wire        lah_row_last = (row_idx  == i_ofm_h_half - 12'd1);
+    wire [7:0]  lah_acc = lah_acc_last ? 8'd0 : acc_cyc + 8'd1;
+    wire [11:0] lah_col = lah_acc_last ? (lah_col_last ? 12'd0 : col_idx + 12'd1) : col_idx;
+    wire [11:0] lah_row = (lah_acc_last && lah_col_last) ?
+                          (lah_row_last ? 12'd0 : row_idx + 12'd1) : row_idx;
+
     assign o_ifm_re    = (cstate == ST_LOAD) || (cstate == ST_RUN);
-    assign o_ifm_row   = row_idx;
-    assign o_ifm_col   = col_idx;
-    assign o_ifm_acc   = acc_cyc;
+    assign o_ifm_row   = (cstate == ST_RUN) ? lah_row : row_idx;
+    assign o_ifm_col   = (cstate == ST_RUN) ? lah_col : col_idx;
+    assign o_ifm_acc   = (cstate == ST_RUN) ? lah_acc : acc_cyc;
 
     assign o_done      = (cstate == ST_DONE);
 

@@ -54,10 +54,11 @@ module conv_top_tb;
     localparam integer L0_OFM_BYTES  = L0_CO * L0_H * L0_W;
     localparam integer L0_WGT_BYTES  = L0_CO * L0_CI * 9;
 
-    parameter IFM_HEX  = "C:/yolohw/sim/inout_data_sw/log_feamap/CONV00_input.hex";
-    parameter WGT_HEX  = "C:/yolohw/sim/inout_data_sw/log_param/CONV00_param_weight.hex";
-    parameter BIAS_HEX = "C:/yolohw/sim/inout_data_sw/log_param/CONV00_param_biases.hex";
-    parameter OFM_HEX  = "C:/yolohw/sim/inout_data_sw/log_feamap/CONV00_output.hex";
+    parameter IFM_HEX   = "../../../../../../sim/inout_data_sw/log_feamap/CONV00_input.hex";
+    parameter WGT_HEX   = "../../../../../../sim/inout_data_sw/log_param/CONV00_param_weight.hex";
+    parameter BIAS_HEX  = "../../../../../../sim/inout_data_sw/log_param/CONV00_param_biases.hex";
+    parameter SCALE_HEX = "../../../../../../sim/inout_data_sw/log_param/CONV00_param_scales.hex";
+    parameter OFM_HEX   = "../../../../../../sim/inout_data_sw/log_feamap/CONV00_output.hex";
 
     //--------------------------------------------------------------
     // ifm_line_buf 결선 (DMA write port 는 TB 가 직접 mem 에 적재하므로 tie LOW)
@@ -109,7 +110,7 @@ module conv_top_tb;
         .i_acc_len(8'd1),
         .i_wgt_base(10'd0),
         .i_bias_base(12'd0),
-        .i_shift(5'd13),                        // L0 추정 shift
+        .i_shift(l0_shift),                     // CONV00_param_scales.hex 에서 계산
         .dma_wgt_we(1'b0),  .dma_wgt_addr(12'd0),  .dma_wgt_data(72'd0),
         .dma_bias_we(1'b0), .dma_bias_addr(12'd0), .dma_bias_data(32'd0),
         .o_ifm_re(conv_ifm_re),
@@ -124,19 +125,24 @@ module conv_top_tb;
     //--------------------------------------------------------------
     // OFM 캡쳐 (conv_top 이 출력하는 픽셀을 reg array 에 누적)
     //--------------------------------------------------------------
-    reg [31:0] ofm_cap [0:65535];
+    // 16 filter × 128 × 128 = 262144 entries → 18-bit address
+    reg [31:0] ofm_cap [0:262143];
 
     always @(posedge clk) begin
-        if (conv_pixel_vld) ofm_cap[conv_ofm_addr[15:0]] <= conv_pixel;
+        if (conv_pixel_vld) ofm_cap[conv_ofm_addr[17:0]] <= conv_pixel;
     end
 
     //--------------------------------------------------------------
     // TB-local raw buffer + golden
     //--------------------------------------------------------------
-    reg [7:0]  ifm_raw  [0:L0_IFM_BYTES-1];
-    reg [7:0]  wgt_raw  [0:L0_WGT_BYTES-1];
-    reg [15:0] bias_raw [0:L0_CO-1];
-    reg [7:0]  ofm_gold [0:L0_OFM_BYTES-1];
+    reg [7:0]  ifm_raw   [0:L0_IFM_BYTES-1];
+    reg [7:0]  wgt_raw   [0:L0_WGT_BYTES-1];
+    reg [15:0] bias_raw  [0:L0_CO-1];
+    reg [15:0] scale_raw [0:L0_CO-1];   // 2^shift per filter (e.g. 0x0080 = 128 = 2^7)
+    reg [7:0]  ofm_gold  [0:L0_OFM_BYTES-1];
+
+    // shift = log2(scale_raw[0]) — L0 에서 모든 filter 동일 (0x0080 → 7)
+    reg [4:0] l0_shift;
 
     function [7:0] ifm_byte;
         input integer c; input integer h; input integer w;
@@ -180,10 +186,21 @@ module conv_top_tb;
 
         // ----- Hex 로드 -----
         $display("[conv_top_tb] Loading hex files...");
-        $readmemh(IFM_HEX,  ifm_raw);
-        $readmemh(WGT_HEX,  wgt_raw);
-        $readmemh(BIAS_HEX, bias_raw);
-        $readmemh(OFM_HEX,  ofm_gold);
+        $readmemh(IFM_HEX,   ifm_raw);
+        $readmemh(WGT_HEX,   wgt_raw);
+        $readmemh(BIAS_HEX,  bias_raw);
+        $readmemh(SCALE_HEX, scale_raw);
+        $readmemh(OFM_HEX,   ofm_gold);
+
+        // scale_raw[f] = 2^shift (e.g. 0x0080 = 128 = 2^7 → shift=7)
+        // L0 에서 모든 filter 동일 — filter 0 기준으로 shift 계산
+        l0_shift = 0;
+        begin : blk_shift
+            reg [15:0] sv;
+            sv = scale_raw[0];
+            while (sv > 16'h0001) begin sv = sv >> 1; l0_shift = l0_shift + 5'd1; end
+        end
+        $display("[conv_top_tb] L0 shift = %0d  (scale=0x%04h)", l0_shift, scale_raw[0]);
 
         // ----- gbuff_param weight 적재 (16 filter × 4 slot = 64 entry) -----
         for (f = 0; f < L0_CO; f = f + 1) begin
@@ -234,8 +251,15 @@ module conv_top_tb;
         end
         $display("[conv_top_tb] IFM preloaded (4 rows, cyclic-mapped)");
 
+        // 로드 검증 덤프
+        dump_wgt_bias;
+        $display("[DBG] gold[f=0,row=0,col=0]=0x%02h  gold[f=0,row=0,col=1]=0x%02h",
+            ofm_gold[0*L0_H*L0_W + 0*L0_W + 0], ofm_gold[0*L0_H*L0_W + 0*L0_W + 1]);
+        $display("[DBG] IFM[ch0,row0,col0]=0x%02h  IFM[ch1,row0,col0]=0x%02h  IFM[ch2,row0,col0]=0x%02h",
+            ifm_raw[0*L0_H*L0_W + 0], ifm_raw[1*L0_H*L0_W + 0], ifm_raw[2*L0_H*L0_W + 0]);
+
         // ofm_cap 초기화 (X 방지)
-        for (dummy = 0; dummy < 65536; dummy = dummy + 1) ofm_cap[dummy] = 32'd0;
+        for (dummy = 0; dummy < 262144; dummy = dummy + 1) ofm_cap[dummy] = 32'd0;
 
         // ----- Reset 해제 + conv 시작 -----
         #(8*CLK_PERIOD) rstn = 1'b1;
@@ -299,6 +323,49 @@ module conv_top_tb;
                     end
                 end
             end
+        end
+    endtask
+
+    //--------------------------------------------------------------
+    // DEBUG: mac_pixel_vld 최초 16개 출력 + 내부 신호 덤프
+    //--------------------------------------------------------------
+    integer dbg_pix_cnt;
+    initial dbg_pix_cnt = 0;
+
+    always @(posedge clk) begin
+        if (conv_pixel_vld && dbg_pix_cnt < 16) begin
+            $display("[DBG_PIX] #%0d  addr=0x%06h  pixel=0x%08h  fil=%0d col=%0d row=%0d  out_cnt=%0d",
+                dbg_pix_cnt,
+                conv_ofm_addr,
+                conv_pixel,
+                u_conv.fil_idx, u_conv.col_idx, u_conv.row_idx,
+                u_conv.out_cnt);
+            dbg_pix_cnt = dbg_pix_cnt + 1;
+        end
+        // mac_vld_d 최초 4회: IFM/WGT 입력 덤프 (타이밍 정렬 확인)
+        if (u_conv.mac_vld_d && dbg_pix_cnt == 0) begin
+            $display("[DBG_MAC] mac_vld_d=1  wgt[7:0]=0x%02h  ifm00[7:0]=0x%02h  bias=0x%08h  col=%0d",
+                u_conv.wgt_data[7:0],
+                ifm_00[7:0],
+                u_conv.bias_data,
+                u_conv.col_idx);
+        end
+    end
+
+    // 가중치/바이어스 로드 후 첫 entry 검증 (initial 보조)
+    task dump_wgt_bias;
+        integer fi;
+        begin
+            $display("--- WGT/BIAS DUMP (filter 0..2) ---");
+            for (fi = 0; fi < 3; fi = fi + 1) begin
+                $display("  wgt_mem[%0d]=%0h  wgt_mem[%0d]=%0h",
+                    fi*4+0, u_conv.u_gbuff.wgt_mem[fi*4+0],
+                    fi*4+1, u_conv.u_gbuff.wgt_mem[fi*4+1]);
+                $display("  bias_mem[%0d]=0x%08h", fi, u_conv.u_gbuff.bias_mem[fi]);
+            end
+            $display("  IFM line_buf[phys0][0]=%0h", u_line_buf.g_line[0].mem[0]);
+            $display("  IFM line_buf[phys3][0]=%0h (padding row)", u_line_buf.g_line[3].mem[0]);
+            $display("-----------------------------------");
         end
     endtask
 

@@ -170,33 +170,38 @@ module upsample_unit(
                             cnt_phase <= 3'd1;
                         end
                         3'd1: begin
-                            // Sample read + write top-left output
+                            // Wait: dpram N_DELAY=1 → phase0 에 주소 세팅,
+                            //        phase1 clock edge 에서 BRAM 이 rdata 를 업데이트,
+                            //        phase2 에서 i_rd_data 가 유효
                             rd_en_r   <= 1'b0;
-                            cache_in  <= i_rd_data;
-                            // Write 는 cache_in 갱신 후 cycle 2 부터 (조합으로 i_rd_data 사용)
-                            wr_en_r   <= 1'b1;
-                            wr_addr_r <= addr_out_00[15:0];
-                            wr_data_r <= {i_rd_data[7:0], i_rd_data[7:0], i_rd_data[7:0], i_rd_data[7:0]};
                             cnt_phase <= 3'd2;
                         end
                         3'd2: begin
+                            // Sample (now valid) + write word_00
+                            cache_in  <= i_rd_data;
                             wr_en_r   <= 1'b1;
-                            wr_addr_r <= addr_out_01[15:0];
-                            wr_data_r <= word_01;
+                            wr_addr_r <= addr_out_00[15:0];
+                            wr_data_r <= {i_rd_data[7:0], i_rd_data[7:0],
+                                          i_rd_data[7:0], i_rd_data[7:0]};
                             cnt_phase <= 3'd3;
                         end
                         3'd3: begin
                             wr_en_r   <= 1'b1;
-                            wr_addr_r <= addr_out_10[15:0];
-                            wr_data_r <= word_10;
+                            wr_addr_r <= addr_out_01[15:0];
+                            wr_data_r <= word_01;
                             cnt_phase <= 3'd4;
                         end
                         3'd4: begin
                             wr_en_r   <= 1'b1;
+                            wr_addr_r <= addr_out_10[15:0];
+                            wr_data_r <= word_10;
+                            cnt_phase <= 3'd5;
+                        end
+                        3'd5: begin
+                            wr_en_r   <= 1'b1;
                             wr_addr_r <= addr_out_11[15:0];
                             wr_data_r <= word_11;
                             cnt_phase <= 3'd0;
-
                             if (cnt_c == i_w_blocks - 12'd1) begin
                                 cnt_c <= 12'd0;
                                 if (cnt_r == i_h_blocks - 12'd1) begin

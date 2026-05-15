@@ -205,8 +205,9 @@ module max_pool_s1_unit(
                 end
 
                 ST_RUN: begin
-                    // ----- Read addr 발사 (phase 0..3) -----
-                    if (cnt_phase < 3'd4) begin
+                    // ----- Read addr 발사 (phase 0..3 만 발사, phase 4~5는 no-read) -----
+                    // dpram N_DELAY=1: phase X에 주소 세팅 → phase X+1 edge 후 dob 유효
+                    if (cnt_phase <= 3'd3) begin
                         rd_en_r   <= 1'b1;
                         rd_addr_r <= addr_in[15:0];
                         if (cnt_phase == 3'd1) valid_rc1  <= ~in_rc1_oob;
@@ -216,17 +217,17 @@ module max_pool_s1_unit(
                         rd_en_r <= 1'b0;
                     end
 
-                    // ----- Sample data (1-cycle 후 BRAM 결과) -----
+                    // ----- Sample data (phase+1 에 dob 유효 → 2,3,4,5 에 샘플) -----
                     case (cnt_phase)
-                        3'd1: cache_rc   <= i_rd_data;                                  // phase 0 read 결과
-                        3'd2: cache_rc1  <= valid_rc1  ? i_rd_data : 32'd0;
-                        3'd3: cache_r1c  <= valid_r1c  ? i_rd_data : 32'd0;
-                        3'd4: cache_r1c1 <= valid_r1c1 ? i_rd_data : 32'd0;
+                        3'd2: cache_rc   <= i_rd_data;
+                        3'd3: cache_rc1  <= valid_rc1  ? i_rd_data : 32'd0;
+                        3'd4: cache_r1c  <= valid_r1c  ? i_rd_data : 32'd0;
+                        3'd5: cache_r1c1 <= valid_r1c1 ? i_rd_data : 32'd0;
                         default: ;
                     endcase
 
-                    // ----- Phase 4: write output + advance counter -----
-                    if (cnt_phase == 3'd4) begin
+                    // ----- Phase 6: write output (cache_r1c1 이 phase5 에 확정된 후) -----
+                    if (cnt_phase == 3'd6) begin
                         wr_en_r   <= 1'b1;
                         wr_addr_r <= addr_out[15:0];
                         wr_data_r <= out_word;

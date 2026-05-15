@@ -136,12 +136,7 @@ module max_pool_unit_tb;
                 // Actually input was overwritten? No — pool 의 in-place 는 read 가 write 보다 앞서서 안전.
                 //   But in this TB we wrote pattern before pool, pool reads then writes lower addr.
                 //   We need expected from ORIGINAL pattern. Re-compute from i*4+j.
-                gen_word = {
-                    8'((((i*4+j)*4) + 3) & 8'hFF),
-                    8'((((i*4+j)*4) + 2) & 8'hFF),
-                    8'((((i*4+j)*4) + 1) & 8'hFF),
-                    8'((((i*4+j)*4)    ) & 8'hFF)
-                };
+                gen_word = gen_pattern(i*4 + j);
                 m01 = (gen_word[ 7: 0] > gen_word[15: 8]) ? gen_word[ 7: 0] : gen_word[15: 8];
                 m23 = (gen_word[23:16] > gen_word[31:24]) ? gen_word[23:16] : gen_word[31:24];
                 mx  = (m01 > m23) ? m01 : m23;

@@ -34,6 +34,7 @@ set ip_core    "blk_mem_gen"
 # 1) spram_2048x128 - Weight buffer (Single Port)
 #============================================================
 puts "Creating spram_2048x128..."
+catch { delete_ip [get_ips spram_2048x128] }
 create_ip -name $ip_core -vendor $ip_vendor -library $ip_library \
           -version $ip_version -module_name spram_2048x128
 
@@ -53,6 +54,7 @@ set_property -dict [list \
 # 2) spram_128x32 - Bias buffer (Single Port)
 #============================================================
 puts "Creating spram_128x32..."
+catch { delete_ip [get_ips spram_128x32] }
 create_ip -name $ip_core -vendor $ip_vendor -library $ip_library \
           -version $ip_version -module_name spram_128x32
 
@@ -74,12 +76,12 @@ set_property -dict [list \
 #   Port B: read only (conv_layer_ctrl fetch)
 #============================================================
 puts "Creating dpram_16384x128..."
+catch { delete_ip [get_ips dpram_16384x128] }
 create_ip -name $ip_core -vendor $ip_vendor -library $ip_library \
           -version $ip_version -module_name dpram_16384x128
 
 set_property -dict [list \
     CONFIG.Memory_Type {Simple_Dual_Port_RAM} \
-    CONFIG.Common_Clock {true} \
     CONFIG.Write_Width_A {128} \
     CONFIG.Write_Depth_A {16384} \
     CONFIG.Read_Width_A  {128} \
@@ -100,12 +102,12 @@ set_property -dict [list \
 #   Port B: read only (DMA store)
 #============================================================
 puts "Creating dpram_65536x32..."
+catch { delete_ip [get_ips dpram_65536x32] }
 create_ip -name $ip_core -vendor $ip_vendor -library $ip_library \
           -version $ip_version -module_name dpram_65536x32
 
 set_property -dict [list \
     CONFIG.Memory_Type {Simple_Dual_Port_RAM} \
-    CONFIG.Common_Clock {true} \
     CONFIG.Write_Width_A {32} \
     CONFIG.Write_Depth_A {65536} \
     CONFIG.Read_Width_A  {32} \
@@ -128,12 +130,12 @@ set_property -dict [list \
 #     automatic asymmetric port 로 매핑한다.
 #============================================================
 puts "Creating dpram_4096x72..."
+catch { delete_ip [get_ips dpram_4096x72] }
 create_ip -name $ip_core -vendor $ip_vendor -library $ip_library \
           -version $ip_version -module_name dpram_4096x72
 
 set_property -dict [list \
     CONFIG.Memory_Type {Simple_Dual_Port_RAM} \
-    CONFIG.Common_Clock {true} \
     CONFIG.Write_Width_A {72} \
     CONFIG.Write_Depth_A {4096} \
     CONFIG.Read_Width_A  {72} \
@@ -156,12 +158,12 @@ set_property -dict [list \
 #   4 인스턴스 사용 (4-row sliding window).
 #============================================================
 puts "Creating dpram_2048x128_tdp..."
+catch { delete_ip [get_ips dpram_2048x128_tdp] }
 create_ip -name $ip_core -vendor $ip_vendor -library $ip_library \
           -version $ip_version -module_name dpram_2048x128_tdp
 
 set_property -dict [list \
     CONFIG.Memory_Type {True_Dual_Port_RAM} \
-    CONFIG.Common_Clock {true} \
     CONFIG.Write_Width_A {128} \
     CONFIG.Write_Depth_A {2048} \
     CONFIG.Read_Width_A  {128} \
@@ -183,6 +185,7 @@ set_property -dict [list \
 #   entry 당 {bias[15:0], shift[15:0]} packed.
 #============================================================
 puts "Creating spram_2560x32..."
+catch { delete_ip [get_ips spram_2560x32] }
 create_ip -name $ip_core -vendor $ip_vendor -library $ip_library \
           -version $ip_version -module_name spram_2560x32
 

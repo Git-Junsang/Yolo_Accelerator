@@ -254,10 +254,10 @@ module yolo_engine_tb;
     localparam integer L0_W_BLOCKS   = L0_W / 4;     // = 64
     localparam integer L0_IFM_BYTES  = L0_H * L0_W * L0_CI;
 
-    parameter IFM_HEX  = "C:/yolohw/sim/inout_data_sw/log_feamap/CONV00_input.hex";
-    parameter WGT_HEX  = "C:/yolohw/sim/inout_data_sw/log_param/CONV00_param_weight.hex";
-    parameter BIAS_HEX = "C:/yolohw/sim/inout_data_sw/log_param/CONV00_param_biases.hex";
-    parameter OFM_HEX  = "C:/yolohw/sim/inout_data_sw/log_feamap/CONV00_output.hex";
+    parameter IFM_HEX  = "../../../../../../sim/inout_data_sw/log_feamap/CONV00_input.hex";
+    parameter WGT_HEX  = "../../../../../../sim/inout_data_sw/log_param/CONV00_param_weight.hex";
+    parameter BIAS_HEX = "../../../../../../sim/inout_data_sw/log_param/CONV00_param_biases.hex";
+    parameter OFM_HEX  = "../../../../../../sim/inout_data_sw/log_feamap/CONV00_output.hex";
 
     // DRAM 적재 base 주소 (32-bit word index)
     localparam integer BASE_WGT_BYTE   = 32'h0000_0000;

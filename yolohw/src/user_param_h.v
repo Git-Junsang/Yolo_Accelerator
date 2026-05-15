@@ -19,20 +19,20 @@ parameter WGT_DATA_SIZE     = Fx*Fy*Ni*No;	             // Layer 00
 parameter WGT_WORD_SIZE     = 32;
 
 
-parameter IFM_FILE_32 		 = "C:/yolohw/sim/inout_data_sw/log_feamap/CONV00_input_32b.hex"; 
-parameter IFM_FILE   		 = "C:/yolohw/sim/inout_data_sw/log_feamap/CONV00_input_16b.hex"; 
-parameter WGT_FILE   		 = "C:/yolohw/sim/inout_data_sw/log_param/CONV00_param_weight.hex"; 
+parameter IFM_FILE_32        = "../../../../../../sim/inout_data_sw/log_feamap/CONV00_input_32b.hex";
+parameter IFM_FILE           = "../../../../../../sim/inout_data_sw/log_feamap/CONV00_input_16b.hex";
+parameter WGT_FILE           = "../../../../../../sim/inout_data_sw/log_param/CONV00_param_weight.hex";
 
 // Output Files
-parameter CONV_INPUT_IMG00   = "C:/yolohw/sim/inout_data_hw/CONV00_input_ch00.bmp"; 
-parameter CONV_INPUT_IMG01   = "C:/yolohw/sim/inout_data_hw/CONV00_input_ch01.bmp"; 
-parameter CONV_INPUT_IMG02   = "C:/yolohw/sim/inout_data_hw/CONV00_input_ch02.bmp"; 
-parameter CONV_INPUT_IMG03   = "C:/yolohw/sim/inout_data_hw/CONV00_input_ch03.bmp"; 
+parameter CONV_INPUT_IMG00   = "../../../../../../sim/inout_data_hw/CONV00_input_ch00.bmp";
+parameter CONV_INPUT_IMG01   = "../../../../../../sim/inout_data_hw/CONV00_input_ch01.bmp";
+parameter CONV_INPUT_IMG02   = "../../../../../../sim/inout_data_hw/CONV00_input_ch02.bmp";
+parameter CONV_INPUT_IMG03   = "../../../../../../sim/inout_data_hw/CONV00_input_ch03.bmp";
 
-parameter CONV_OUTPUT_IMG00  = "C:/yolohw/sim/inout_data_hw/CONV00_output_ch00.bmp"; 
-parameter CONV_OUTPUT_IMG01  = "C:/yolohw/sim/inout_data_hw/CONV00_output_ch01.bmp"; 
-parameter CONV_OUTPUT_IMG02  = "C:/yolohw/sim/inout_data_hw/CONV00_output_ch02.bmp"; 
-parameter CONV_OUTPUT_IMG03  = "C:/yolohw/sim/inout_data_hw/CONV00_output_ch03.bmp"; 
+parameter CONV_OUTPUT_IMG00  = "../../../../../../sim/inout_data_hw/CONV00_output_ch00.bmp";
+parameter CONV_OUTPUT_IMG01  = "../../../../../../sim/inout_data_hw/CONV00_output_ch01.bmp";
+parameter CONV_OUTPUT_IMG02  = "../../../../../../sim/inout_data_hw/CONV00_output_ch02.bmp";
+parameter CONV_OUTPUT_IMG03  = "../../../../../../sim/inout_data_hw/CONV00_output_ch03.bmp"; 
 
 // SRAM Size
 parameter DW            = 32;	  // data bit-width per word

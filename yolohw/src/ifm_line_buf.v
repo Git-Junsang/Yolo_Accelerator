@@ -196,12 +196,42 @@ module ifm_line_buf(
     //----------------------------------------------------------------
     wire [1:0] base_line = i_rb[0] ? 2'd1 : 2'd3;
 
+    //----------------------------------------------------------------
+    // 1-cycle pipeline registers (BRAM read latency 보상)
+    //   BRAM 에 request 를 보낸 cycle 의 window 추출 파라미터를 1 cycle 저장.
+    //   다음 cycle 에 BRAM 출력이 유효해질 때 동일 파라미터로 window 추출.
+    //   conv_top 이 look-ahead i_cb 를 보내므로, 여기서 pipeline 하지 않으면
+    //   BRAM data (request cycle 기준) 와 offset/boundary 판정 (현재 cycle 기준)
+    //   이 1 cycle 어긋난다.
+    //----------------------------------------------------------------
+    reg [1:0] offset_r;
+    reg [3:0] col_inv_r;
+    reg [3:0] row_inv_r;
+    reg [1:0] bline_r;
+    reg [1:0] col_inblk_r;
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            offset_r    <= 2'd0;
+            col_inv_r   <= 4'hF;
+            row_inv_r   <= 4'hF;
+            bline_r     <= 2'd3;
+            col_inblk_r <= 2'd0;
+        end else if (i_rd_en) begin
+            offset_r    <= offset;
+            col_inv_r   <= col_invalid_3x3;
+            row_inv_r   <= row_invalid;
+            bline_r     <= base_line;
+            col_inblk_r <= col_inblk_1x1;
+        end
+    end
+
     // window slot ln_y 의 physical line index (BRAM read 결과 mux)
-    //   line_sel[ln_y] = (base_line + ln_y) mod 4
-    wire [1:0] line_sel_0 = base_line;
-    wire [1:0] line_sel_1 = base_line + 2'd1;
-    wire [1:0] line_sel_2 = base_line + 2'd2;
-    wire [1:0] line_sel_3 = base_line + 2'd3;
+    //   line_sel[ln_y] = (bline_r + ln_y) mod 4  — pipeline 된 base_line 사용
+    wire [1:0] line_sel_0 = bline_r;
+    wire [1:0] line_sel_1 = bline_r + 2'd1;
+    wire [1:0] line_sel_2 = bline_r + 2'd2;
+    wire [1:0] line_sel_3 = bline_r + 2'd3;
 
     wire [127:0] ent_a [0:3];
     wire [127:0] ent_b [0:3];
@@ -271,8 +301,8 @@ module ifm_line_buf(
 
     always @(*) begin
         for (rr = 0; rr < 4; rr = rr + 1) begin
-            // ----- Offset mux로 raw 4-col window 형성 -----
-            case (offset)
+            // ----- Offset mux로 raw 4-col window 형성 (pipeline 된 offset_r 사용) -----
+            case (offset_r)
                 2'd0: begin
                     window[rr][0] = get_col32(ent_a[rr], 2'd0);
                     window[rr][1] = get_col32(ent_a[rr], 2'd1);
@@ -299,18 +329,18 @@ module ifm_line_buf(
                 end
             endcase
 
-            // ----- Boundary padding (3×3 path 만) -----
+            // ----- Boundary padding (3×3 path 만, pipeline 된 row_inv_r/col_inv_r 사용) -----
             if (!i_mode) begin
-                if (row_invalid[rr]) begin
+                if (row_inv_r[rr]) begin
                     window[rr][0] = 32'd0;
                     window[rr][1] = 32'd0;
                     window[rr][2] = 32'd0;
                     window[rr][3] = 32'd0;
                 end else begin
-                    if (col_invalid_3x3[0]) window[rr][0] = 32'd0;
-                    if (col_invalid_3x3[1]) window[rr][1] = 32'd0;
-                    if (col_invalid_3x3[2]) window[rr][2] = 32'd0;
-                    if (col_invalid_3x3[3]) window[rr][3] = 32'd0;
+                    if (col_inv_r[0]) window[rr][0] = 32'd0;
+                    if (col_inv_r[1]) window[rr][1] = 32'd0;
+                    if (col_inv_r[2]) window[rr][2] = 32'd0;
+                    if (col_inv_r[3]) window[rr][3] = 32'd0;
                 end
             end
             // 1×1 mode: padding 없음 (kernel size 1, stride 1, no border)
@@ -365,10 +395,10 @@ module ifm_line_buf(
             //     ifm_11 ← window[2][col_inblk_1x1 + 1]
             //   ※ 1×1 mode 에서 line buffer 는 base_line+1 = row 2*Rb,
             //     base_line+2 = row 2*Rb+1 로 매핑되어 있음.
-            ifm00_w[31:0] = window[1][col_inblk_1x1];
-            ifm01_w[31:0] = window[1][col_inblk_1x1 + 2'd1];
-            ifm10_w[31:0] = window[2][col_inblk_1x1];
-            ifm11_w[31:0] = window[2][col_inblk_1x1 + 2'd1];
+            ifm00_w[31:0] = window[1][col_inblk_r];
+            ifm01_w[31:0] = window[1][col_inblk_r + 2'd1];
+            ifm10_w[31:0] = window[2][col_inblk_r];
+            ifm11_w[31:0] = window[2][col_inblk_r + 2'd1];
         end
     end
 
