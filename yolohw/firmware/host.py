@@ -76,15 +76,16 @@ OBJ_THRESH = 0.24
 # bias_word_offset: 이전 layer 의 Co 누적 합 (32-bit word 단위)
 # ═══════════════════════════════════════════════════════════════════════════════
 CONV_LAYERS = [
-    # hex   Co    Ci   ksz acc  blkOff   biasOff
-    ('00',  16,   3,   3,   1,       0,       0),
-    ('02',  32,  16,   3,   4,      16,      16),
-    ('04',  64,  32,   3,   8,     144,      48),
-    ('06', 128,  64,   3,  16,     656,     112),
-    ('08', 256, 128,   3,  32,    2704,     240),
-    ('10', 512, 256,   3,  64,   10896,     496),
+    # hex   Co    Ci   kbytes acc  blkOff   biasOff
+    # kbytes: 3×3 kernel = 9 bytes/ch, 1×1 kernel = 1 byte/ch
+    ('00',  16,   3,   9,   1,       0,       0),
+    ('02',  32,  16,   9,   4,      16,      16),
+    ('04',  64,  32,   9,   8,     144,      48),
+    ('06', 128,  64,   9,  16,     656,     112),
+    ('08', 256, 128,   9,  32,    2704,     240),
+    ('10', 512, 256,   9,  64,   10896,     496),
     ('12', 256, 512,   1, 128,   43664,    1008),
-    ('13', 512, 256,   3,  64,   76432,    1264),
+    ('13', 512, 256,   9,  64,   76432,    1264),
     ('14', 195, 512,   1, 128,  109200,    1776),
     ('17', 128, 256,   1,  64,  134160,    1971),
     ('20', 195, 384,   1,  96,  142352,    2099),
@@ -222,25 +223,25 @@ def build_weight_buf(param_dir):
     """
     buf = bytearray(TOTAL_WGT_BLOCKS * 64)   # = TOTAL_WGT_WORDS × 4 bytes
 
-    for hex_id, Co, Ci, ksz, acc_len, blk_off, _ in CONV_LAYERS:
+    for hex_id, Co, Ci, kbytes, acc_len, blk_off, _ in CONV_LAYERS:
         path = os.path.join(param_dir, f'CONV{hex_id}_param_weight.hex')
         with open(path) as f:
             raw = bytearray(int(ln.strip(), 16) for ln in f if ln.strip())
-        expected = Co * Ci * ksz
+        expected = Co * Ci * kbytes
         if len(raw) != expected:
             raise ValueError(
                 f'CONV{hex_id}_param_weight.hex 크기 불일치: {len(raw)} != {expected}')
 
         for fi in range(Co):
-            fi_off = fi * Ci * ksz          # hex raw 내 filter fi 시작 index
+            fi_off = fi * Ci * kbytes       # hex raw 내 filter fi 시작 index
             for g in range(acc_len):
                 block_byte = (blk_off + fi * acc_len + g) * 64
                 for s in range(4):          # 4 slots per group (4 channels)
                     ch = g * 4 + s
                     slot_byte = block_byte + s * 16
                     if ch < Ci:
-                        k0 = fi_off + ch * ksz
-                        buf[slot_byte: slot_byte + ksz] = raw[k0: k0 + ksz]
+                        k0 = fi_off + ch * kbytes
+                        buf[slot_byte: slot_byte + kbytes] = raw[k0: k0 + kbytes]
                     # 나머지 바이트는 0 (bytearray 기본값)
 
     size_kb = len(buf) // 1024
