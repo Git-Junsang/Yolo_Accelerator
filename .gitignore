@@ -1,0 +1,36 @@
+# Vivado simulation waveform databases (수백 MB)
+*.wdb
+*.wdb-shm
+*.wdb-wal
+*.xilwvdat
+*.xilwvdat.lnx64
+
+# Vivado simulation logs & intermediate files
+*.log
+*.jou
+*.str
+*.pb
+xsim.dir/
+
+# Vivado project cache & generated files
+*.ip_user_files/
+*.cache/
+*.hw/
+*.runs/
+*.gen/
+*.sim/
+*.srcs/
+*.sdk/
+
+# Visual Studio / IntelliSense cache
+*.ipch
+.vs/
+
+# Compiled / built binaries
+skeleton/bin/darknet
+skeleton/bin/*.o
+skeleton/src/*.o
+
+# OS artifacts
+.DS_Store
+Thumbs.db
