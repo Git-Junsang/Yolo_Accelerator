@@ -1,6 +1,6 @@
 Vivado Simulator v2021.1
 Copyright 1986-1999, 2001-2021 Xilinx, Inc. All Rights Reserved.
-Running: D:/ProgramFiles/Vivado/2021.1/bin/unwrapped/win64.o/xelab.exe -wto 099edbdc047e40939906dc948bc5b4e6 --incr --debug typical --relax --mt 2 -L xil_defaultlib -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot yolo_engine_tb_behav xil_defaultlib.yolo_engine_tb xil_defaultlib.glbl -log elaborate.log 
+Running: D:/ProgramFiles/Vivado/2021.1/bin/unwrapped/win64.o/xelab.exe -wto 099edbdc047e40939906dc948bc5b4e6 --incr --debug typical --relax --mt 2 -L xil_defaultlib -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot yolo_engine_golden_tb_behav xil_defaultlib.yolo_engine_golden_tb xil_defaultlib.glbl -log elaborate.log 
 Using 2 slave threads.
 Starting static elaboration
 Pass Through NonSizing Optimizer
@@ -24,6 +24,6 @@ Compiling module xil_defaultlib.max_pool_s1_unit
 Compiling module xil_defaultlib.upsample_unit
 Compiling module xil_defaultlib.dpram_wrapper(DW=32,AW=16,DEPTH=...
 Compiling module xil_defaultlib.yolo_engine
-Compiling module xil_defaultlib.yolo_engine_tb
+Compiling module xil_defaultlib.yolo_engine_golden_tb
 Compiling module xil_defaultlib.glbl
-Built simulation snapshot yolo_engine_tb_behav
+Built simulation snapshot yolo_engine_golden_tb_behav

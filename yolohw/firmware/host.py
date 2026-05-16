@@ -54,7 +54,7 @@ MODE_YOLO_POST  = 0x08
 # DRAM 레이아웃 (DDR2_BASE 기준 byte offset)
 # ═══════════════════════════════════════════════════════════════════════════════
 DDR2_OFF_WGT  = 0x00000000  # weight 전체 (22 conv layer 연속)
-DDR2_OFF_BIAS = 0x00010000  # bias 전체 (weight + 64 KB)
+DDR2_OFF_BIAS = 0x00A00000  # bias 전체 (weight ~9.8 MB 이후 안전 위치)
 DDR2_OFF_IFM  = 0x01000000  # 입력 이미지 (256×256×3 packed)
 DDR2_OFF_OFM  = 0x02000000  # OFM 영역 (per-layer offset)
 

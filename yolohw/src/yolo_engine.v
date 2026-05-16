@@ -81,6 +81,7 @@ module yolo_engine #(
     output wire [3:0]                        M_ARQOS,
     output wire [3:0]                        M_ARREGION,
     output wire [3:0]                        M_ARUSER,
+    
     // Read data
     input  wire                              M_RVALID,
     output wire                              M_RREADY,
@@ -571,6 +572,7 @@ module yolo_engine #(
         .o_done(conv_done),
         .o_fil_done(conv_fil_done),
         .i_conv_pause(conv_pause_r),
+        .i_stream_wgt_mode(stream_wgt_mode),
         .i_mode(lyr_mode),
         .i_ofm_w_half(lyr_ofm_w_half),
         .i_ofm_h_half(lyr_ofm_h_half),
@@ -807,9 +809,9 @@ module yolo_engine #(
     // 32-bit byte addr 계산 — offset_w (word) × 4 = byte addr
     //----------------------------------------------------------------
     wire [31:0] addr_wgt  = addr_wgt_base;  // 레이어별 DRAM weight base
-    // bias: 모든 layer bias 를 dram_wgt_base+0x10000 에 연속 배치 (software 약속)
+    // bias: dram_wgt_base+0x00A0_0000 (weight 최대 ~10MB, 안전 마진 후)
     //   layer k 의 bias DRAM offset = lyr_bias_base × 4 bytes
-    wire [31:0] addr_bias = dram_wgt_base + 32'h0001_0000 + ({20'd0, lyr_bias_base} << 2);
+    wire [31:0] addr_bias = dram_wgt_base + 32'h00A0_0000 + ({20'd0, lyr_bias_base} << 2);
     wire [31:0] addr_ifm  = lyr_use_input
                           ? dram_ifm_base
                           : (dram_ofm_base + ({12'd0, lyr_ifm_offset_w} << 2));

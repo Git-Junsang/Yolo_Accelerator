@@ -78,9 +78,9 @@ module gbuff_param(
     );
 
     // 단일 포트 BRAM (write/read mux 외부 제어 — layer 시작 시점에만 write)
-    wire        bias_cs   = wr_bias_en | rd_bias_en;
-    wire        bias_we   = wr_bias_en;
-    wire [11:0] bias_addr = wr_bias_en ? wr_bias_addr : rd_bias_addr;
+    wire        bias_cs   = wr_bias_en | rd_bias_en;  // chip select (enable)
+    wire        bias_we   = wr_bias_en;                // write enable
+    wire [11:0] bias_addr = wr_bias_en ? wr_bias_addr : rd_bias_addr; // 1개의 주소 입력 단자(bias_addr)에 어떤 주소를 연결해 줄지 결정하는 MUX(멀티플렉서, 선택기)
     wire [31:0] bias_din  = wr_bias_data;
 
     spram_2560x32 u_bias_mem (

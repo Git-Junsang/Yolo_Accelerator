@@ -1,8 +1,11 @@
 # AIX2026 베타트론 — 세션 핸드오프 문서
 
-## 📍 현재 위치: **Phase 3 코드 완성** (RTL + firmware + host.py 모두 완료)
+## 📍 현재 위치: **Phase 3 완성 + 골든 TB 완성** (2026-05-16)
 
-보드 통합(Vivado IP 재패키징 + XSA + 비트스트림)만 남아 있음.
+- RTL + firmware + host.py 완료
+- `yolohw/sim/yolo_engine_golden_tb.v` 신규 작성 (22-layer 전체 골든 비교)
+- Bias DRAM 주소 버그 수정: `0x10000` → `0xA00000` (3개 파일)
+- 보드 통합(Vivado IP 재패키징 + XSA + 비트스트림)만 남아 있음.
 
 ---
 
@@ -168,6 +171,18 @@ DDR2_BASE + 0x0200_0000 : OFM (per-layer offset, yolo_engine.v 테이블 기준)
 ### Phase 3 추가/수정 파일
 - `yolohw/fpga/vitis/memorytest.c` — 수정 완료
 - `yolohw/firmware/host.py` — 신규 작성 완료
+
+### 골든 TB (이번 세션 추가)
+- `yolohw/sim/gen_sim_dram.py` — DRAM .mem 생성기 (python3로 실행)
+- `yolohw/sim/yolo_engine_golden_tb.v` — 22-layer 전체 골든 비교 TB
+- `yolohw/sim/inout_data_sw/gen_wgt_dram.mem` — 생성된 weight DRAM (9.83 MB)
+- `yolohw/sim/inout_data_sw/gen_bias_dram.mem` — 생성된 bias DRAM (2294 words)
+- `yolohw/sim/inout_data_sw/gen_ifm_dram.mem` — 생성된 IFM DRAM (65536 words)
+
+### 버그 수정 (bias DRAM 주소 overlap)
+- `yolohw/src/yolo_engine.v`: `32'h0001_0000` → `32'h00A0_0000`
+- `yolohw/firmware/host.py`: `DDR2_OFF_BIAS = 0x00010000` → `0x00A00000`
+- `yolohw/fpga/vitis/memorytest.c`: `BIAS_OFFSET_BYTES 0x00010000u` → `0x00A00000u`
 
 ---
 

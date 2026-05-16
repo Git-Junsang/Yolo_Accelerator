@@ -49,7 +49,7 @@
 /* ── DRAM 레이아웃 상수 (byte 주소, MIG_BASE 기준 offset) ── */
 #define DDR2_BASE             XPAR_MIG_7SERIES_0_BASEADDR
 #define WGT_OFFSET_BYTES      0x00000000u  /* weight base */
-#define BIAS_OFFSET_BYTES     0x00010000u  /* bias: wgt_base + 0x10000 */
+#define BIAS_OFFSET_BYTES     0x00A00000u  /* bias: wgt_base + 0xA00000 (weight ~10MB 이후) */
 #define IFM_OFFSET_BYTES      0x01000000u  /* 입력 이미지 */
 #define OFM_OFFSET_BYTES      0x02000000u  /* OFM 영역 시작 */
 

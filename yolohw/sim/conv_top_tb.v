@@ -117,6 +117,8 @@ module conv_top_tb;
         .o_ifm_row(conv_ifm_row), .o_ifm_col(conv_ifm_col), .o_ifm_acc(conv_ifm_acc),
         .i_ifm_00(ifm_00), .i_ifm_01(ifm_01),
         .i_ifm_10(ifm_10), .i_ifm_11(ifm_11),
+        .i_conv_pause(1'b0),              // TB: streaming pause 없음
+        .o_fil_done(),                    // TB: 미사용
         .o_pixel(conv_pixel),
         .o_pixel_vld(conv_pixel_vld),
         .o_ofm_addr(conv_ofm_addr)

@@ -30,11 +30,12 @@ module conv_top(
     input              rstn,
 
     // ===== layer 컨트롤 =====
-    input              i_start,        // 1-cycle pulse
-    output             o_done,         // 1-cycle pulse
-    output             o_fil_done,     // 1-cycle pulse: 필터 1개 완료 (ST_DRAIN→ST_NEXT 전이)
-    input              i_conv_pause,   // HIGH: ST_NEXT 에서 대기 (streaming DMA 용)
-    input              i_mode,         // 0=CONV3x3, 1=CONV1x1
+    input              i_start,           // 1-cycle pulse
+    output             o_done,            // 1-cycle pulse
+    output             o_fil_done,        // 1-cycle pulse: 필터 1개 완료 (ST_DRAIN→ST_NEXT 전이)
+    input              i_conv_pause,      // HIGH: ST_NEXT 에서 대기 (streaming DMA 용)
+    input              i_stream_wgt_mode, // HIGH: 필터별 weight DMA (wgt_base_r 동결)
+    input              i_mode,            // 0=CONV3x3, 1=CONV1x1
 
     // ===== layer 파라미터 =====
     input  [11:0]      i_ofm_w_half,   // OFM width  / 2 (2×2 block 수)
@@ -279,12 +280,22 @@ module conv_top(
                 end
 
                 ST_NEXT: begin
-                    fil_idx        <= fil_idx + 12'd1;
-                    wgt_base_r     <= wgt_base_r + {2'b00, i_acc_len};
-                    // 다음 ST_LOAD cycle 의 wgt_addr_r 발사값 = new wgt_base (entry 0)
-                    wgt_addr_r     <= wgt_base_r + {2'b00, i_acc_len};
-                    bias_addr_r    <= bias_addr_r + 12'd1;
-                    frame_offset_r <= frame_offset_r + {2'd0, q_total};
+                    // i_conv_pause 중에는 카운터를 동결 — pause 동안 매 cycle 증가하면
+                    // fil_idx 가 DMA 사이클 수만큼 과도하게 증가하여 fil_last 불일치 발생
+                    if (!i_conv_pause) begin
+                        fil_idx        <= fil_idx + 12'd1;
+                        // stream_wgt_mode: BRAM write 가 항상 base(=0)에서 시작하므로
+                        // wgt_base_r 를 동결 — filter k>0 도 BRAM[0..acc_len-1] 을 읽음
+                        if (!i_stream_wgt_mode)
+                            wgt_base_r <= wgt_base_r + {2'b00, i_acc_len};
+                        bias_addr_r    <= bias_addr_r + 12'd1;
+                        frame_offset_r <= frame_offset_r + {2'd0, q_total};
+                    end
+                    // 다음 ST_LOAD cycle 의 wgt_addr_r 발사값:
+                    //   stream_wgt_mode: 항상 base(=0) 에서 시작
+                    //   normal mode    : 다음 filter 의 base (wgt_base_r + acc_len)
+                    wgt_addr_r <= i_stream_wgt_mode ? wgt_base_r
+                                                    : (wgt_base_r + {2'b00, i_acc_len});
                 end
 
                 ST_DONE: ;
