@@ -32,6 +32,8 @@ module conv_top(
     // ===== layer 컨트롤 =====
     input              i_start,        // 1-cycle pulse
     output             o_done,         // 1-cycle pulse
+    output             o_fil_done,     // 1-cycle pulse: 필터 1개 완료 (ST_DRAIN→ST_NEXT 전이)
+    input              i_conv_pause,   // HIGH: ST_NEXT 에서 대기 (streaming DMA 용)
     input              i_mode,         // 0=CONV3x3, 1=CONV1x1
 
     // ===== layer 파라미터 =====
@@ -179,7 +181,7 @@ module conv_top(
             ST_LOAD :                                    nstate = ST_RUN;
             ST_RUN  : if (spatial_last)                  nstate = ST_DRAIN;
             ST_DRAIN: if (out_cnt == q_total[23:0])      nstate = ST_NEXT;
-            ST_NEXT :                                    nstate = fil_last ? ST_DONE : ST_LOAD;
+            ST_NEXT : if (!i_conv_pause)                 nstate = fil_last ? ST_DONE : ST_LOAD;
             ST_DONE :                                    nstate = ST_IDLE;
             default :                                    nstate = ST_IDLE;
         endcase
@@ -297,6 +299,8 @@ module conv_top(
     assign o_pixel     = mac_pixel;
     assign o_pixel_vld = mac_pixel_vld;
     assign o_ofm_addr  = frame_offset_r + {2'd0, out_cnt};
+    // ST_DRAIN → ST_NEXT 전이 1-cycle pulse (필터 k 완료 신호)
+    assign o_fil_done  = (cstate == ST_DRAIN) && (out_cnt[23:0] == q_total[23:0]);
 
     // IFM look-ahead: ifm_line_buf 의 BRAM read latency = 1 cycle.
     //   ST_LOAD: 현재 (row=0, col=0, acc=0) 발사 → ST_RUN 첫 cycle 에 데이터 도착.

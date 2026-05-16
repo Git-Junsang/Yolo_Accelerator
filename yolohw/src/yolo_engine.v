@@ -173,6 +173,7 @@ module yolo_engine #(
     reg         lyr_pool_stride;
     reg  [9:0]  lyr_wgt_base;
     reg  [11:0] lyr_bias_base;
+    reg  [17:0] lyr_wgt_dram_blk;  // 누적 Co×acc_len (16-word 블록 단위)
     reg  [7:0]  lyr_ci_groups_r;
 
     always @(*) begin
@@ -181,31 +182,33 @@ module yolo_engine #(
         lyr_acc_len     = 8'd0;  lyr_shift       = 5'd13;
         lyr_mode        = 1'b0;  lyr_conv_en     = 1'b0;
         lyr_pool_en     = 1'b0;  lyr_pool_stride = 1'b0;
-        lyr_wgt_base    = 10'd0; lyr_bias_base   = 12'd0;
+        lyr_wgt_base    = 10'd0; lyr_bias_base   = 12'd0; lyr_wgt_dram_blk = 18'd0;
         lyr_ci_groups_r = 8'd1;
+        // lyr_wgt_dram_blk: 이전 conv layer 들의 Co×acc_len 누적합 (16-word 블록 단위).
+        //   addr_wgt_base(byte) = dram_wgt_base + lyr_wgt_dram_blk × 64
         case (layer_idx)
-            5'd0:  begin lyr_ofm_w=12'd256; lyr_ofm_h=12'd256; lyr_ci=12'd3;   lyr_co_total=12'd16;  lyr_mode=1'b0; lyr_acc_len=8'd1;   lyr_shift=5'd8;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd0;    lyr_conv_en=1'b1; lyr_ci_groups_r=8'd1;   end
+            5'd0:  begin lyr_ofm_w=12'd256; lyr_ofm_h=12'd256; lyr_ci=12'd3;   lyr_co_total=12'd16;  lyr_mode=1'b0; lyr_acc_len=8'd1;   lyr_shift=5'd8;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd0;    lyr_wgt_dram_blk=18'd0;      lyr_conv_en=1'b1; lyr_ci_groups_r=8'd1;   end
             5'd1:  begin lyr_ofm_w=12'd128; lyr_ofm_h=12'd128; lyr_ci=12'd16;  lyr_co_total=12'd16;  lyr_pool_en=1'b1; lyr_pool_stride=1'b0; lyr_ci_groups_r=8'd4;   end
-            5'd2:  begin lyr_ofm_w=12'd128; lyr_ofm_h=12'd128; lyr_ci=12'd16;  lyr_co_total=12'd32;  lyr_mode=1'b0; lyr_acc_len=8'd4;   lyr_shift=5'd6;  lyr_wgt_base=10'd16;  lyr_bias_base=12'd16;   lyr_conv_en=1'b1; lyr_ci_groups_r=8'd4;   end
+            5'd2:  begin lyr_ofm_w=12'd128; lyr_ofm_h=12'd128; lyr_ci=12'd16;  lyr_co_total=12'd32;  lyr_mode=1'b0; lyr_acc_len=8'd4;   lyr_shift=5'd6;  lyr_wgt_base=10'd16;  lyr_bias_base=12'd16;   lyr_wgt_dram_blk=18'd16;     lyr_conv_en=1'b1; lyr_ci_groups_r=8'd4;   end
             5'd3:  begin lyr_ofm_w=12'd64;  lyr_ofm_h=12'd64;  lyr_ci=12'd32;  lyr_co_total=12'd32;  lyr_pool_en=1'b1; lyr_pool_stride=1'b0; lyr_ci_groups_r=8'd8;   end
-            5'd4:  begin lyr_ofm_w=12'd64;  lyr_ofm_h=12'd64;  lyr_ci=12'd32;  lyr_co_total=12'd64;  lyr_mode=1'b0; lyr_acc_len=8'd8;   lyr_shift=5'd6;  lyr_wgt_base=10'd144; lyr_bias_base=12'd48;   lyr_conv_en=1'b1; lyr_ci_groups_r=8'd8;   end
+            5'd4:  begin lyr_ofm_w=12'd64;  lyr_ofm_h=12'd64;  lyr_ci=12'd32;  lyr_co_total=12'd64;  lyr_mode=1'b0; lyr_acc_len=8'd8;   lyr_shift=5'd6;  lyr_wgt_base=10'd144; lyr_bias_base=12'd48;   lyr_wgt_dram_blk=18'd144;    lyr_conv_en=1'b1; lyr_ci_groups_r=8'd8;   end
             5'd5:  begin lyr_ofm_w=12'd32;  lyr_ofm_h=12'd32;  lyr_ci=12'd64;  lyr_co_total=12'd64;  lyr_pool_en=1'b1; lyr_pool_stride=1'b0; lyr_ci_groups_r=8'd16;  end
-            5'd6:  begin lyr_ofm_w=12'd32;  lyr_ofm_h=12'd32;  lyr_ci=12'd64;  lyr_co_total=12'd128; lyr_mode=1'b0; lyr_acc_len=8'd16;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd112;  lyr_conv_en=1'b1; lyr_ci_groups_r=8'd16;  end
+            5'd6:  begin lyr_ofm_w=12'd32;  lyr_ofm_h=12'd32;  lyr_ci=12'd64;  lyr_co_total=12'd128; lyr_mode=1'b0; lyr_acc_len=8'd16;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd112;  lyr_wgt_dram_blk=18'd656;    lyr_conv_en=1'b1; lyr_ci_groups_r=8'd16;  end
             5'd7:  begin lyr_ofm_w=12'd16;  lyr_ofm_h=12'd16;  lyr_ci=12'd128; lyr_co_total=12'd128; lyr_pool_en=1'b1; lyr_pool_stride=1'b0; lyr_ci_groups_r=8'd32;  end
-            5'd8:  begin lyr_ofm_w=12'd16;  lyr_ofm_h=12'd16;  lyr_ci=12'd128; lyr_co_total=12'd256; lyr_mode=1'b0; lyr_acc_len=8'd32;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd240;  lyr_conv_en=1'b1; lyr_ci_groups_r=8'd32;  end
+            5'd8:  begin lyr_ofm_w=12'd16;  lyr_ofm_h=12'd16;  lyr_ci=12'd128; lyr_co_total=12'd256; lyr_mode=1'b0; lyr_acc_len=8'd32;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd240;  lyr_wgt_dram_blk=18'd2704;   lyr_conv_en=1'b1; lyr_ci_groups_r=8'd32;  end
             5'd9:  begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd256; lyr_co_total=12'd256; lyr_pool_en=1'b1; lyr_pool_stride=1'b0; lyr_ci_groups_r=8'd64;  end
-            5'd10: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd256; lyr_co_total=12'd512; lyr_mode=1'b0; lyr_acc_len=8'd64;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd496;  lyr_conv_en=1'b1; lyr_ci_groups_r=8'd64;  end
+            5'd10: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd256; lyr_co_total=12'd512; lyr_mode=1'b0; lyr_acc_len=8'd64;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd496;  lyr_wgt_dram_blk=18'd10896;  lyr_conv_en=1'b1; lyr_ci_groups_r=8'd64;  end
             5'd11: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd512; lyr_co_total=12'd512; lyr_pool_en=1'b1; lyr_pool_stride=1'b1; lyr_ci_groups_r=8'd128; end
-            5'd12: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd512; lyr_co_total=12'd256; lyr_mode=1'b1; lyr_acc_len=8'd128; lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd1008; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd128; end
-            5'd13: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd256; lyr_co_total=12'd512; lyr_mode=1'b0; lyr_acc_len=8'd64;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd1264; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd64;  end
-            5'd14: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd512; lyr_co_total=12'd195; lyr_mode=1'b1; lyr_acc_len=8'd128; lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd1776; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd128; end
-            5'd15: begin                                                                                                                                                                                            end
-            5'd16: begin                                                                                                                                                                                            end
-            5'd17: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd256; lyr_co_total=12'd128; lyr_mode=1'b1; lyr_acc_len=8'd64;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd1971; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd64;  end
-            5'd18: begin lyr_ofm_w=12'd16;  lyr_ofm_h=12'd16;  lyr_ci=12'd128; lyr_co_total=12'd128;                                                                                                                end
-            5'd19: begin lyr_ofm_w=12'd16;  lyr_ofm_h=12'd16;  lyr_ci=12'd384; lyr_co_total=12'd384;                                                                                                                end
-            5'd20: begin lyr_ofm_w=12'd16;  lyr_ofm_h=12'd16;  lyr_ci=12'd384; lyr_co_total=12'd195; lyr_mode=1'b1; lyr_acc_len=8'd96;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd2099; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd96;  end
-            5'd21: begin                                                                                                                                                                                            end
+            5'd12: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd512; lyr_co_total=12'd256; lyr_mode=1'b1; lyr_acc_len=8'd128; lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd1008; lyr_wgt_dram_blk=18'd43664;  lyr_conv_en=1'b1; lyr_ci_groups_r=8'd128; end
+            5'd13: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd256; lyr_co_total=12'd512; lyr_mode=1'b0; lyr_acc_len=8'd64;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd1264; lyr_wgt_dram_blk=18'd76432;  lyr_conv_en=1'b1; lyr_ci_groups_r=8'd64;  end
+            5'd14: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd512; lyr_co_total=12'd195; lyr_mode=1'b1; lyr_acc_len=8'd128; lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd1776; lyr_wgt_dram_blk=18'd109200; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd128; end
+            5'd15: begin                                                                                                                                                                                                end
+            5'd16: begin                                                                                                                                                                                                end
+            5'd17: begin lyr_ofm_w=12'd8;   lyr_ofm_h=12'd8;   lyr_ci=12'd256; lyr_co_total=12'd128; lyr_mode=1'b1; lyr_acc_len=8'd64;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd1971; lyr_wgt_dram_blk=18'd134160; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd64;  end
+            5'd18: begin lyr_ofm_w=12'd16;  lyr_ofm_h=12'd16;  lyr_ci=12'd128; lyr_co_total=12'd128;                                                                                                                    end
+            5'd19: begin lyr_ofm_w=12'd16;  lyr_ofm_h=12'd16;  lyr_ci=12'd384; lyr_co_total=12'd384;                                                                                                                    end
+            5'd20: begin lyr_ofm_w=12'd16;  lyr_ofm_h=12'd16;  lyr_ci=12'd384; lyr_co_total=12'd195; lyr_mode=1'b1; lyr_acc_len=8'd96;  lyr_shift=5'd6;  lyr_wgt_base=10'd0;   lyr_bias_base=12'd2099; lyr_wgt_dram_blk=18'd142352; lyr_conv_en=1'b1; lyr_ci_groups_r=8'd96;  end
+            5'd21: begin                                                                                                                                                                                                end
             default: ;
         endcase
     end
@@ -283,6 +286,7 @@ module yolo_engine #(
                ST_DMA_OFM_WAIT= 4'd11,
                ST_NEXT        = 4'd12,
                ST_DONE        = 4'd13;
+    // L19 Route concat (L8→L18+) 은 firmware (MicroBlaze memcpy) 가 담당 — RTL no-op
     reg [3:0] top_state;
 
     // DMA target (read demux)
@@ -368,6 +372,43 @@ module yolo_engine #(
     wire _unused_wr = dma_wr_fail | |dma_rd_data_cnt;
     /* verilator lint_on UNUSED */
 
+    // DMA busy tracking (done 은 1-cycle pulse → 레벨 신호로 변환)
+    reg dma_wr_busy;
+    reg dma_rd_busy;
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            dma_wr_busy <= 1'b0;
+            dma_rd_busy <= 1'b0;
+        end else begin
+            if (dma_wr_start) dma_wr_busy <= 1'b1;
+            else if (dma_wr_done) dma_wr_busy <= 1'b0;
+            if (dma_rd_start) dma_rd_busy <= 1'b1;
+            else if (dma_rd_done) dma_rd_busy <= 1'b0;
+        end
+    end
+
+    // ----------------------------------------------------------------
+    // OFM Streaming DMA + Weight Streaming 레지스터
+    //   stream_mode     : OFM 이 dpram(65536 word) 초과 → 필터별 OFM DMA (L0, L2)
+    //   stream_wgt_mode : weight 이 BRAM(1024 read entry) 초과 → 필터별 weight 로딩 (L6+)
+    //   stream_fil_cnt  : OFM streaming 에서 지금까지 DMA 개시한 필터 수
+    //   wgt_fil_cnt     : 다음에 로딩할 weight 필터 인덱스
+    //   stream_dma_addr : 다음 OFM streaming DMA 의 DRAM byte 시작 주소
+    //   addr_wgt_base   : 현재 layer 의 weight DRAM base 주소
+    //   conv_pause_r    : conv_top 의 ST_NEXT 에서 대기 요청 (레벨 신호)
+    // ----------------------------------------------------------------
+    reg        stream_mode;
+    reg [11:0] stream_fil_cnt;
+    reg [11:0] wgt_fil_cnt;
+    reg [31:0] stream_dma_addr;
+    wire [19:0] stream_q_total   = {8'd0, lyr_ofm_w_half} * {8'd0, lyr_ofm_h_half};
+    // weight BRAM 은 1024 × 288-bit read entry. Co×acc_len 이 1024 초과 시 streaming
+    wire        stream_wgt_mode  = (({10'd0, lyr_co_total} * {12'd0, lyr_acc_len}) > 20'd1024);
+    // 필터 1개 분 weight DMA word 수 (= acc_len × 16)
+    wire [19:0] req_wgt_fil_trans = {12'd0, lyr_acc_len} << 4;
+    // 현재 layer weight DRAM byte base
+    wire [31:0] addr_wgt_base    = dram_wgt_base + ({14'd0, lyr_wgt_dram_blk} << 6);
+
     //----------------------------------------------------------------
     // DMA Read demux + width adapter
     //   - Bias: 32-bit → 32-bit gbuff bias (직접)
@@ -430,8 +471,10 @@ module yolo_engine #(
             if (dma_rd_start) begin
                 case (dma_target_r)
                     DMA_TGT_IFM:  begin dma_ifm_row_r <= 12'd0; dma_ifm_eir_r <= 12'd0; end
-                    DMA_TGT_WGT:  wgt_entry_addr_r  <= 12'd0;
-                    DMA_TGT_BIAS: bias_entry_addr_r <= 12'd0;
+                    // weight: lyr_wgt_base(10-bit read entry) × 4 = write entry base
+                    DMA_TGT_WGT:  wgt_entry_addr_r  <= {lyr_wgt_base, 2'b00};
+                    // bias: 모든 layer 의 bias 를 lyr_bias_base 위치부터 BRAM 에 누적
+                    DMA_TGT_BIAS: bias_entry_addr_r <= lyr_bias_base;
                     default: ;
                 endcase
             end
@@ -519,11 +562,15 @@ module yolo_engine #(
     wire [31:0] conv_pixel;
     wire        conv_pixel_vld;
     wire [25:0] conv_ofm_addr;
+    wire        conv_fil_done;
+    reg         conv_pause_r;
 
     conv_top u_conv (
         .clk(clk), .rstn(rstn),
         .i_start(conv_start),
         .o_done(conv_done),
+        .o_fil_done(conv_fil_done),
+        .i_conv_pause(conv_pause_r),
         .i_mode(lyr_mode),
         .i_ofm_w_half(lyr_ofm_w_half),
         .i_ofm_h_half(lyr_ofm_h_half),
@@ -697,9 +744,15 @@ module yolo_engine #(
         if (!rstn) begin
             ofm_store_rd_addr_r <= 16'd0;
         end else if (dma_wr_start) begin
-            ofm_store_rd_addr_r <= lyr_s1_pool_en  ? s1_pool_out_base :
-                                   lyr_upsample_en ? up_out_base      :
-                                                     16'd0;
+            if (stream_mode)
+                // streaming: 필터 k 의 dpram base = (k × q_total) mod 65536
+                // dma_wr_start 가 HIGH 인 cycle 에 stream_fil_cnt 는 이미 k+1.
+                // 하위 16-bit 가 dpram word addr (mod 65536 wrap)
+                ofm_store_rd_addr_r <= ((stream_fil_cnt[7:0] - 8'd1) * stream_q_total[15:0]);
+            else
+                ofm_store_rd_addr_r <= lyr_s1_pool_en  ? s1_pool_out_base :
+                                       lyr_upsample_en ? up_out_base      :
+                                                         16'd0;
         end else if (dma_wr_indata_req) begin
             ofm_store_rd_addr_r <= ofm_store_rd_addr_r + 16'd1;
         end
@@ -753,8 +806,10 @@ module yolo_engine #(
     //----------------------------------------------------------------
     // 32-bit byte addr 계산 — offset_w (word) × 4 = byte addr
     //----------------------------------------------------------------
-    wire [31:0] addr_wgt  = dram_wgt_base;
-    wire [31:0] addr_bias = dram_wgt_base + 32'h0001_0000;  // bias 영역 (software 약속)
+    wire [31:0] addr_wgt  = addr_wgt_base;  // 레이어별 DRAM weight base
+    // bias: 모든 layer bias 를 dram_wgt_base+0x10000 에 연속 배치 (software 약속)
+    //   layer k 의 bias DRAM offset = lyr_bias_base × 4 bytes
+    wire [31:0] addr_bias = dram_wgt_base + 32'h0001_0000 + ({20'd0, lyr_bias_base} << 2);
     wire [31:0] addr_ifm  = lyr_use_input
                           ? dram_ifm_base
                           : (dram_ofm_base + ({12'd0, lyr_ifm_offset_w} << 2));
@@ -784,6 +839,11 @@ module yolo_engine #(
             dma_wr_num_trans  <= 20'd0;
             dma_wr_start_addr <= 32'd0;
             network_done_r    <= 1'b0;
+            conv_pause_r      <= 1'b0;
+            stream_mode       <= 1'b0;
+            stream_fil_cnt    <= 12'd0;
+            wgt_fil_cnt       <= 12'd0;
+            stream_dma_addr   <= 32'd0;
         end else begin
             conv_start    <= 1'b0;
             pool_start    <= 1'b0;
@@ -791,6 +851,8 @@ module yolo_engine #(
             up_start      <= 1'b0;
             dma_rd_start  <= 1'b0;
             dma_wr_start  <= 1'b0;
+            // conv_pause_r 는 레벨 신호 — 여기서 매 cycle 초기화하지 않음
+            // dma_wr_done / dma_rd_done 시점에 ST_DMA_OFM 내에서 명시적으로 해제
 
             case (top_state)
                 ST_IDLE: begin
@@ -816,9 +878,12 @@ module yolo_engine #(
                 ST_DMA_WGT: begin
                     if (lyr_conv_en) begin
                         dma_target_r      <= DMA_TGT_WGT;
-                        dma_rd_num_trans  <= req_wgt_trans;
-                        dma_rd_start_addr <= addr_wgt;
+                        // stream_wgt_mode: 1개 필터 분량만 로딩 (BRAM 초과 방지)
+                        // 아닌 경우: 전체 layer 가중치 한 번에 로딩
+                        dma_rd_num_trans  <= stream_wgt_mode ? req_wgt_fil_trans : req_wgt_trans;
+                        dma_rd_start_addr <= addr_wgt;  // filter 0 base
                         dma_rd_start      <= 1'b1;
+                        wgt_fil_cnt       <= 12'd1;     // 다음 로딩 대상 = filter 1
                         top_state         <= ST_DMA_WGT_WAIT;
                     end else begin
                         top_state <= ST_DMA_IFM;
@@ -874,8 +939,12 @@ module yolo_engine #(
 
                 // ---------- conv 실행 ----------
                 ST_RUN_CONV: begin
-                    conv_start <= 1'b1;
-                    top_state  <= ST_DMA_OFM;
+                    conv_start       <= 1'b1;
+                    stream_mode      <= (conv_ofm_words_24 > 24'd65536);
+                    stream_fil_cnt   <= 12'd0;
+                    stream_dma_addr  <= addr_ofm;
+                    conv_pause_r     <= 1'b0;
+                    top_state        <= ST_DMA_OFM;
                 end
 
                 // ---------- pool / s1_pool / upsample 실행 ----------
@@ -888,14 +957,70 @@ module yolo_engine #(
 
                 // ---------- compute 완료 대기 + OFM store DMA ----------
                 ST_DMA_OFM: begin
-                    if (   (lyr_conv_en     && conv_done)
-                        || (lyr_s1_pool_en  && s1_pool_done)
-                        || (lyr_upsample_en && up_done)
-                        || (lyr_pool_en && !lyr_s1_pool_en && pool_done)) begin
-                        dma_wr_num_trans  <= req_ofm_trans;
-                        dma_wr_start_addr <= addr_ofm;
-                        dma_wr_start      <= 1'b1;
-                        top_state         <= ST_DMA_OFM_WAIT;
+                    if (lyr_conv_en && stream_mode) begin
+                        // ── OFM Streaming 모드 (L0, L2: OFM > 65536 word) ────────────
+                        // 필터 완료 → pause → OFM DMA write → pause 해제 순환
+                        if (conv_fil_done) begin
+                            conv_pause_r <= 1'b1;
+                        end
+                        if (conv_pause_r && !dma_wr_busy && !dma_wr_start) begin
+                            dma_wr_start      <= 1'b1;
+                            dma_wr_num_trans  <= stream_q_total;
+                            dma_wr_start_addr <= stream_dma_addr;
+                            stream_dma_addr   <= stream_dma_addr + {10'd0, stream_q_total, 2'b00};
+                            stream_fil_cnt    <= stream_fil_cnt + 12'd1;
+                            // conv_pause_r 는 dma_wr_done 후에 해제
+                        end
+                        if (dma_wr_done && conv_pause_r) begin
+                            conv_pause_r <= 1'b0;  // OFM DMA 완료 후 pause 해제
+                        end
+                        if (conv_done) begin
+                            // 모든 필터 OFM 을 이미 스트리밍 완료 → ST_NEXT 로 직행
+                            top_state <= ST_NEXT;
+                        end
+                    end else if (lyr_conv_en && stream_wgt_mode) begin
+                        // ── Weight Streaming 모드 (L6+: weight BRAM 초과) ─────────────
+                        // 필터 완료 → pause → 다음 필터 weight DMA → pause 해제 순환
+                        // OFM 은 dpram 에 다 들어가므로 conv_done 후 일괄 DMA
+                        if (conv_fil_done) begin
+                            conv_pause_r <= 1'b1;
+                        end
+                        if (conv_pause_r && !dma_rd_busy && !dma_rd_start) begin
+                            if (wgt_fil_cnt < {4'd0, lyr_co_total}) begin
+                                // 다음 필터의 weight 를 BRAM 에 로딩
+                                dma_target_r      <= DMA_TGT_WGT;
+                                dma_rd_num_trans  <= req_wgt_fil_trans;
+                                // addr = addr_wgt_base + wgt_fil_cnt × acc_len × 64 bytes
+                                dma_rd_start_addr <= addr_wgt_base
+                                    + (({20'd0, wgt_fil_cnt[11:0]} * {24'd0, lyr_acc_len[7:0]}) << 6);
+                                dma_rd_start      <= 1'b1;
+                                wgt_fil_cnt       <= wgt_fil_cnt + 12'd1;
+                            end else begin
+                                // 마지막 필터 완료 (no next weight) → 즉시 pause 해제
+                                conv_pause_r <= 1'b0;
+                            end
+                        end
+                        if (dma_rd_done && conv_pause_r) begin
+                            conv_pause_r <= 1'b0;  // weight DMA 완료 → conv 재개
+                        end
+                        if (conv_done) begin
+                            // 일괄 OFM DMA (dpram → DRAM)
+                            dma_wr_num_trans  <= req_ofm_trans;
+                            dma_wr_start_addr <= addr_ofm;
+                            dma_wr_start      <= 1'b1;
+                            top_state         <= ST_DMA_OFM_WAIT;
+                        end
+                    end else begin
+                        // ── 일반 모드 (OFM dpram 내 수용, weight 한 번에 로딩) ────────
+                        if (   (lyr_conv_en     && conv_done)
+                            || (lyr_s1_pool_en  && s1_pool_done)
+                            || (lyr_upsample_en && up_done)
+                            || (lyr_pool_en && !lyr_s1_pool_en && pool_done)) begin
+                            dma_wr_num_trans  <= req_ofm_trans;
+                            dma_wr_start_addr <= addr_ofm;
+                            dma_wr_start      <= 1'b1;
+                            top_state         <= ST_DMA_OFM_WAIT;
+                        end
                     end
                 end
                 ST_DMA_OFM_WAIT: begin
