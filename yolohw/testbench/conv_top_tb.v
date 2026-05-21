@@ -54,11 +54,13 @@ module conv_top_tb;
     localparam integer L0_OFM_BYTES  = L0_CO * L0_H * L0_W;
     localparam integer L0_WGT_BYTES  = L0_CO * L0_CI * 9;
 
-    parameter IFM_HEX   = "../../../../../../sim/inout_data_sw/log_feamap/CONV00_input.hex";
-    parameter WGT_HEX   = "../../../../../../sim/inout_data_sw/log_param/CONV00_param_weight.hex";
-    parameter BIAS_HEX  = "../../../../../../sim/inout_data_sw/log_param/CONV00_param_biases.hex";
-    parameter SCALE_HEX = "../../../../../../sim/inout_data_sw/log_param/CONV00_param_scales.hex";
-    parameter OFM_HEX   = "../../../../../../sim/inout_data_sw/log_feamap/CONV00_output.hex";
+    // Vivado xsim cwd = yolohw/fpga/vivado_yolohw/vivado_yolohw.sim/sim_1/behav/xsim/
+    //   → 6 levels up = yolohw/ → testbench/inout_data_sw/...
+    parameter IFM_HEX   = "../../../../../../testbench/inout_data_sw/log_feamap/CONV00_input.hex";
+    parameter WGT_HEX   = "../../../../../../testbench/inout_data_sw/log_param/CONV00_param_weight.hex";
+    parameter BIAS_HEX  = "../../../../../../testbench/inout_data_sw/log_param/CONV00_param_biases.hex";
+    parameter SCALE_HEX = "../../../../../../testbench/inout_data_sw/log_param/CONV00_param_scales.hex";
+    parameter OFM_HEX   = "../../../../../../testbench/inout_data_sw/log_feamap/CONV00_output.hex";
 
     //--------------------------------------------------------------
     // ifm_line_buf 결선 (DMA write port 는 TB 가 직접 mem 에 적재하므로 tie LOW)
@@ -103,9 +105,13 @@ module conv_top_tb;
         .clk(clk), .rstn(rstn),
         .i_start(conv_start),
         .o_done(conv_done),
+        .o_fil_done(),                    // TB: 미사용
+        .i_conv_pause(1'b0),              // TB: streaming pause 없음
+        .i_stream_wgt_mode(1'b0),         // TB: 일반 mode (전체 weight 사전 적재)
         .i_mode(1'b0),
         .i_ofm_w_half(12'd128),
         .i_ofm_h_half(12'd128),
+        .i_row_start(12'd0),              // TB: 한 번에 전 row 처리 (스트리밍 X)
         .i_co_total(12'd16),
         .i_acc_len(8'd1),
         .i_wgt_base(10'd0),
@@ -117,8 +123,6 @@ module conv_top_tb;
         .o_ifm_row(conv_ifm_row), .o_ifm_col(conv_ifm_col), .o_ifm_acc(conv_ifm_acc),
         .i_ifm_00(ifm_00), .i_ifm_01(ifm_01),
         .i_ifm_10(ifm_10), .i_ifm_11(ifm_11),
-        .i_conv_pause(1'b0),              // TB: streaming pause 없음
-        .o_fil_done(),                    // TB: 미사용
         .o_pixel(conv_pixel),
         .o_pixel_vld(conv_pixel_vld),
         .o_ofm_addr(conv_ofm_addr)
