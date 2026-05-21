@@ -34,3 +34,9 @@ skeleton/src/*.o
 # OS artifacts
 .DS_Store
 Thumbs.db
+
+# iverilog 컴파일 출력 (yolohw/sim/ 전용)
+yolohw/sim/
+
+# 소프트 삭제 보관함
+.recycle_bin/

@@ -76,19 +76,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
-## 6. 활성 파일 구조 (Phase 1 완료 시점)
+## 6. 활성 파일 구조 (Phase 3 완료 시점)
 
 ```
-yolohw/src/    — 활성 RTL (19 파일, 합성 가능)
-yolohw/sim/    — 활성 TB (5 파일) + hex 데이터 폴더
-yolohw/fpga/   — Vivado 프로젝트 + BMG IP TCL
-skeleton/      — C 골든 레퍼런스 + 양자화 hex 생성기 (Linux에서 빌드)
+yolohw/src/        — 활성 RTL (18 파일, 합성 가능, legacy 전부 제거됨)
+yolohw/testbench/  — 활성 TB (13 파일) + hex 데이터 폴더 + sim_dram_model
+yolohw/sim/        — iverilog 컴파일 출력 전용 (.gitignore, 빌드 산출물)
+yolohw/firmware/   — host.py (Host PC UART 클라이언트)
+yolohw/fpga/       — Vivado 프로젝트 + BMG IP TCL + Vitis firmware
+skeleton/          — C 골든 레퍼런스 + 양자화 hex 생성기 (Linux에서 빌드)
+.recycle_bin/      — 소프트 삭제 보관함 (.recycle_bin/REASON.md 참조)
 ```
 
-**`yolohw/src/` 내 legacy 파일 (합성 제외)**: `axi_dma_ctrl.v`, `cnn_ctrl.v`, `define.v`, `max_pool.v`
-→ 위 4개는 참조용으로만 보존. Vivado 프로젝트 소스 목록에 포함하지 말 것.
-
-legacy 파일은 `yolohw/src_backup/`, `yolohw/sim_backup/`, `yolohw/_archive/` 에도 보존.
+**`yolohw/src/` 18 파일 전부 합성 대상** — legacy 파일 없음. Vivado 소스 목록에 src/ 전체 포함 가능.
 
 ---
 

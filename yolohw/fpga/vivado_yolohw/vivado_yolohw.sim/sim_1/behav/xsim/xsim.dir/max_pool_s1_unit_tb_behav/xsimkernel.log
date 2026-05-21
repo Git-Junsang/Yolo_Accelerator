@@ -1,7 +1,0 @@
-Running: xsim.dir/max_pool_s1_unit_tb_behav/xsimk.exe -simmode gui -wdb max_pool_s1_unit_tb_behav.wdb -simrunnum 0 -socket 8167
-Design successfully loaded
-Design Loading Memory Usage: 10476 KB (Peak: 10476 KB)
-Design Loading CPU Usage: 46 ms
-Simulation completed
-Simulation Memory Usage: 13408 KB (Peak: 13408 KB)
-Simulation CPU Usage: 46 ms

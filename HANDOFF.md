@@ -90,7 +90,7 @@ Weight DRAM 포맷 (filter-major → group-major → slot-minor):
   slot = [kernel(9 or 1 bytes)] + [zero pad to 16 bytes]
 
 Bias DRAM 포맷:
-  DDR2_BASE + 0x10000 + lyr_bias_base × 4
+  DDR2_BASE + 0x00A0_0000 + lyr_bias_base × 4
   각 bias: 16-bit hex → sign-extend → 32-bit LE
 
 IFM DRAM 포맷 (L0: 256×256×3):
@@ -140,7 +140,7 @@ launch_runs impl_1 -to_step write_bitstream -jobs 4
 
 ```
 DDR2_BASE + 0x0000_0000 : Weight 전체 (11 conv layer, ~9.8 MB)
-DDR2_BASE + 0x0001_0000 : Bias 전체 (2294 × 4 bytes)
+DDR2_BASE + 0x00A0_0000 : Bias 전체 (2294 × 4 bytes)
 DDR2_BASE + 0x0100_0000 : IFM (256×256×3, packed)
 DDR2_BASE + 0x0200_0000 : OFM (per-layer offset, yolo_engine.v 테이블 기준)
 ```

@@ -1,7 +1,0 @@
-Running: xsim.dir/yolo_engine_tb_behav/xsimk.exe -simmode gui -wdb yolo_engine_tb_behav.wdb -simrunnum 0 -socket 10574
-Design successfully loaded
-Design Loading Memory Usage: 11864 KB (Peak: 11864 KB)
-Design Loading CPU Usage: 62 ms
-Simulation completed
-Simulation Memory Usage: 30232 KB (Peak: 30232 KB)
-Simulation CPU Usage: 264562 ms

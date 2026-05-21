@@ -25,7 +25,7 @@
 //   ctrl_reg2 = dram_ifm_base  : input image (L0 IFM)
 //   ctrl_reg3 = dram_ofm_base  : 모든 layer OFM 영역 (per-layer offset 적용)
 //
-//   bias_offset (weight base 기준)         : +0x10000 (software 약속)
+//   bias_offset (weight base 기준)         : +0x00A0_0000 (weight ~10 MB 이후 안전 위치)
 //   software 가 weight/IFM 을 16-byte entry 단위로 padding 하여 적재.
 //
 // MicroBlaze 통합:
@@ -273,20 +273,21 @@ module yolo_engine #(
     //----------------------------------------------------------------
     // Top FSM
     //----------------------------------------------------------------
-    localparam ST_IDLE        = 4'd0,
-               ST_INIT        = 4'd1,
-               ST_DMA_WGT     = 4'd2,
-               ST_DMA_WGT_WAIT= 4'd3,
-               ST_DMA_BIAS    = 4'd4,
-               ST_DMA_BIAS_WAIT = 4'd5,
-               ST_DMA_IFM     = 4'd6,
-               ST_DMA_IFM_WAIT= 4'd7,
-               ST_RUN_CONV    = 4'd8,
-               ST_RUN_POOL    = 4'd9,
-               ST_DMA_OFM     = 4'd10,
-               ST_DMA_OFM_WAIT= 4'd11,
-               ST_NEXT        = 4'd12,
-               ST_DONE        = 4'd13;
+    localparam ST_IDLE             = 4'd0,
+               ST_INIT             = 4'd1,
+               ST_DMA_WGT          = 4'd2,
+               ST_DMA_WGT_WAIT     = 4'd3,
+               ST_DMA_BIAS         = 4'd4,
+               ST_DMA_BIAS_WAIT    = 4'd5,
+               ST_DMA_IFM          = 4'd6,
+               ST_DMA_IFM_WAIT     = 4'd7,
+               ST_RUN_CONV         = 4'd8,
+               ST_RUN_POOL         = 4'd9,
+               ST_DMA_OFM          = 4'd10,
+               ST_DMA_OFM_WAIT     = 4'd11,
+               ST_NEXT             = 4'd12,
+               ST_DONE             = 4'd13,
+               ST_DMA_IFM_ROW_WAIT = 4'd14;  // rb_stream: 다음 rb IFM 로딩 대기
     // L19 Route concat (L8→L18+) 은 firmware (MicroBlaze memcpy) 가 담당 — RTL no-op
     reg [3:0] top_state;
 
@@ -403,6 +404,26 @@ module yolo_engine #(
     reg [11:0] wgt_fil_cnt;
     reg [31:0] stream_dma_addr;
     wire [19:0] stream_q_total   = {8'd0, lyr_ofm_w_half} * {8'd0, lyr_ofm_h_half};
+
+    // ----------------------------------------------------------------
+    // Row-block IFM Streaming (rb_stream) — L0/L2 처럼 line_buf 초과 layer
+    //   lb_addr_calc = eir 방식에서 은 bank r%4 에 순환 덮어씀.
+    //   올바른 데이터 보존을 위해 rb 단위(h_half=1) 로 conv_top 을 반복 구동.
+    //   각 rb 처리 전: 2 개 IFM 행 DMA 로드 → conv_top i_start → 완료 후 다음 rb.
+    // ----------------------------------------------------------------
+    reg         rb_stream_mode_r;        // rb streaming 활성 (L0/L2)
+    reg [11:0]  rb_stream_rb_r;          // 현재 처리 중인 rb (row_idx, 0..H_half-1)
+    reg [11:0]  conv_h_half_r;           // conv_top i_ofm_h_half: rb_stream=1, 일반=H_half
+    reg [11:0]  rb_stream_ifm_first_r;   // 다음 IFM DMA 의 첫 번째 IFM row 번호
+
+    // rb_stream 조건: 3×3 conv AND H×entries_per_row > 8192
+    wire [19:0] ifm_total_entries = {8'd0, lyr_ofm_h} * {8'd0, entries_per_row[11:0]};
+    wire        ifm_rb_stream_needed = lyr_conv_en && !lyr_mode && (ifm_total_entries > 20'd8192);
+
+    // IFM DMA 워드 수 계산
+    wire [19:0] req_ifm_rb_init_trans = ({4'd0, entries_per_row} * 12'd3) << 2;  // 초기 3행
+    wire [19:0] req_ifm_rb_row_trans  = ({4'd0, entries_per_row} * 12'd2) << 2;  // 이후 2행
+    wire [19:0] req_ifm_rb_1row_trans = {4'd0, entries_per_row} << 2;             // 마지막 1행
     // weight BRAM 은 1024 × 288-bit read entry. Co×acc_len 이 1024 초과 시 streaming
     wire        stream_wgt_mode  = (({10'd0, lyr_co_total} * {12'd0, lyr_acc_len}) > 20'd1024);
     // 필터 1개 분 weight DMA word 수 (= acc_len × 16)
@@ -471,7 +492,9 @@ module yolo_engine #(
         end else begin
             if (dma_rd_start) begin
                 case (dma_target_r)
-                    DMA_TGT_IFM:  begin dma_ifm_row_r <= 12'd0; dma_ifm_eir_r <= 12'd0; end
+                    // rb_stream: 연속 IFM 로드 시 실제 첫 row 번호 (bank 선택). 일반: row 0.
+                    DMA_TGT_IFM:  begin dma_ifm_row_r <= rb_stream_mode_r ? rb_stream_ifm_first_r : 12'd0;
+                                        dma_ifm_eir_r <= 12'd0; end
                     // weight: lyr_wgt_base(10-bit read entry) × 4 = write entry base
                     DMA_TGT_WGT:  wgt_entry_addr_r  <= {lyr_wgt_base, 2'b00};
                     // bias: 모든 layer 의 bias 를 lyr_bias_base 위치부터 BRAM 에 누적
@@ -502,9 +525,11 @@ module yolo_engine #(
     //   addr in line          = (r/4) × entries_per_row + entry_in_row
     //----------------------------------------------------------------
     wire [1:0]  lb_phys_line = dma_ifm_row_r[1:0];
-    wire [11:0] row_grp_idx  = dma_ifm_row_r[11:2];     // r / 4
-    wire [23:0] lb_addr_calc = row_grp_idx * entries_per_row + {12'd0, dma_ifm_eir_r};
-    wire [10:0] lb_phys_addr = lb_addr_calc[10:0];      // 2048 entry / line (wraparound 가능)
+    // Fix: eir 만 사용 — row_grp_idx 제거로 오버플로우 방지.
+    // 각 행 r 은 bank r%4 의 addr eir(0..entries_per_row-1) 에 저장.
+    // MAC 은 항상 addr 0..entries_per_row-1 만 읽으므로 정확히 대응.
+    wire [23:0] lb_addr_calc = {12'd0, dma_ifm_eir_r};
+    wire [10:0] lb_phys_addr = lb_addr_calc[10:0];
 
     wire        dma_lb_wr_en   = asm_full && (dma_target_r == DMA_TGT_IFM);
     wire [1:0]  dma_lb_wr_line = lb_phys_line;
@@ -575,7 +600,8 @@ module yolo_engine #(
         .i_stream_wgt_mode(stream_wgt_mode),
         .i_mode(lyr_mode),
         .i_ofm_w_half(lyr_ofm_w_half),
-        .i_ofm_h_half(lyr_ofm_h_half),
+        .i_ofm_h_half(conv_h_half_r),   // rb_stream=1, 일반=lyr_ofm_h_half
+        .i_row_start(rb_stream_rb_r),    // rb_stream=rb 인덱스, 일반=0
         .i_co_total(lyr_co_total),
         .i_acc_len(lyr_acc_len),
         .i_wgt_base(lyr_wgt_base),
@@ -747,10 +773,13 @@ module yolo_engine #(
             ofm_store_rd_addr_r <= 16'd0;
         end else if (dma_wr_start) begin
             if (stream_mode)
-                // streaming: 필터 k 의 dpram base = (k × q_total) mod 65536
+                // streaming: 필터 k 의 dpram base 계산
+                //   일반 stream_mode : k × stream_q_total (H_half×W_half 간격)
+                //   rb_stream 모드   : k × W_half         (1행=W_half 간격)
                 // dma_wr_start 가 HIGH 인 cycle 에 stream_fil_cnt 는 이미 k+1.
-                // 하위 16-bit 가 dpram word addr (mod 65536 wrap)
-                ofm_store_rd_addr_r <= ((stream_fil_cnt[7:0] - 8'd1) * stream_q_total[15:0]);
+                ofm_store_rd_addr_r <= rb_stream_mode_r ?
+                    ((stream_fil_cnt[7:0] - 8'd1) * lyr_ofm_w_half[15:0]) :
+                    ((stream_fil_cnt[7:0] - 8'd1) * stream_q_total[15:0]);
             else
                 ofm_store_rd_addr_r <= lyr_s1_pool_en  ? s1_pool_out_base :
                                        lyr_upsample_en ? up_out_base      :
@@ -846,6 +875,10 @@ module yolo_engine #(
             stream_fil_cnt    <= 12'd0;
             wgt_fil_cnt       <= 12'd0;
             stream_dma_addr   <= 32'd0;
+            rb_stream_mode_r      <= 1'b0;
+            rb_stream_rb_r        <= 12'd0;
+            conv_h_half_r         <= 12'd1;
+            rb_stream_ifm_first_r <= 12'd0;
         end else begin
             conv_start    <= 1'b0;
             pool_start    <= 1'b0;
@@ -915,13 +948,24 @@ module yolo_engine #(
                 //   conv / pool stride-1 / upsample 모두 DRAM 에서 IFM 적재 필요.
                 //   pool stride-2 는 OFM dpram 에 이미 있는 직전 conv 결과 사용 → DMA skip.
                 //   ※ pool/upsample 의 경우 OFM dpram 에 input 적재 후 처리.
+                //   ※ rb_stream 모드 (L0/L2): 초기 3행만 로드.
                 ST_DMA_IFM: begin
                     if (lyr_conv_en) begin
-                        dma_target_r      <= DMA_TGT_IFM;
-                        dma_rd_num_trans  <= req_ifm_trans;
-                        dma_rd_start_addr <= addr_ifm;
-                        dma_rd_start      <= 1'b1;
-                        top_state         <= ST_DMA_IFM_WAIT;
+                        dma_target_r  <= DMA_TGT_IFM;
+                        if (ifm_rb_stream_needed) begin
+                            // rb_stream 초기화: 처음 3행만 로드 (rb=0은 rows -1,0,1,2 필요)
+                            rb_stream_mode_r      <= 1'b1;
+                            rb_stream_rb_r        <= 12'd0;
+                            rb_stream_ifm_first_r <= 12'd0;  // 첫 IFM DMA: row 0부터 시작
+                            dma_rd_num_trans  <= req_ifm_rb_init_trans;
+                            dma_rd_start_addr <= addr_ifm;
+                        end else begin
+                            rb_stream_mode_r  <= 1'b0;
+                            dma_rd_num_trans  <= req_ifm_trans;
+                            dma_rd_start_addr <= addr_ifm;
+                        end
+                        dma_rd_start <= 1'b1;
+                        top_state    <= ST_DMA_IFM_WAIT;
                     end else if (lyr_pool_en && !lyr_s1_pool_en) begin
                         // stride-2 pool: input 이 직전 conv 의 OFM (dpram 에 이미 있음)
                         top_state <= ST_RUN_POOL;
@@ -941,12 +985,20 @@ module yolo_engine #(
 
                 // ---------- conv 실행 ----------
                 ST_RUN_CONV: begin
-                    conv_start       <= 1'b1;
-                    stream_mode      <= (conv_ofm_words_24 > 24'd65536);
-                    stream_fil_cnt   <= 12'd0;
-                    stream_dma_addr  <= addr_ofm;
-                    conv_pause_r     <= 1'b0;
-                    top_state        <= ST_DMA_OFM;
+                    conv_start    <= 1'b1;
+                    stream_mode   <= (conv_ofm_words_24 > 24'd65536);
+                    stream_fil_cnt <= 12'd0;
+                    conv_pause_r  <= 1'b0;
+                    // rb_stream: conv_top 에 h_half=1 + 현재 rb 인덱스 전달
+                    conv_h_half_r <= rb_stream_mode_r ? 12'd1 : lyr_ofm_h_half;
+                    // rb_stream: DRAM 시작 = addr_ofm + rb × W_half × 4 bytes
+                    //   (필터 간 stride = stream_q_total × 4 바이트, 이후 동일)
+                    if (rb_stream_mode_r)
+                        stream_dma_addr <= addr_ofm +
+                            (({20'd0, rb_stream_rb_r} * {20'd0, lyr_ofm_w_half}) << 2);
+                    else
+                        stream_dma_addr <= addr_ofm;
+                    top_state <= ST_DMA_OFM;
                 end
 
                 // ---------- pool / s1_pool / upsample 실행 ----------
@@ -962,13 +1014,17 @@ module yolo_engine #(
                     if (lyr_conv_en && stream_mode) begin
                         // ── OFM Streaming 모드 (L0, L2: OFM > 65536 word) ────────────
                         // 필터 완료 → pause → OFM DMA write → pause 해제 순환
+                        // rb_stream 모드: OFM 워드 수 = W_half (1행 분), DRAM stride = stream_q_total
                         if (conv_fil_done) begin
                             conv_pause_r <= 1'b1;
                         end
                         if (conv_pause_r && !dma_wr_busy && !dma_wr_start) begin
                             dma_wr_start      <= 1'b1;
-                            dma_wr_num_trans  <= stream_q_total;
+                            // rb_stream: 1행 분(W_half) 만 DMA, 일반: 전체 filter 분
+                            dma_wr_num_trans  <= rb_stream_mode_r ?
+                                {8'd0, lyr_ofm_w_half} : stream_q_total;
                             dma_wr_start_addr <= stream_dma_addr;
+                            // 다음 필터 DRAM 위치 = 현재 + H_half×W_half×4 bytes (filter-major stride)
                             stream_dma_addr   <= stream_dma_addr + {10'd0, stream_q_total, 2'b00};
                             stream_fil_cnt    <= stream_fil_cnt + 12'd1;
                             // conv_pause_r 는 dma_wr_done 후에 해제
@@ -977,8 +1033,31 @@ module yolo_engine #(
                             conv_pause_r <= 1'b0;  // OFM DMA 완료 후 pause 해제
                         end
                         if (conv_done) begin
-                            // 모든 필터 OFM 을 이미 스트리밍 완료 → ST_NEXT 로 직행
-                            top_state <= ST_NEXT;
+                            // rb_stream: 아직 처리할 rb 가 있으면 → 다음 rb IFM 로딩
+                            if (rb_stream_mode_r && rb_stream_rb_r < lyr_ofm_h_half - 12'd1) begin
+                                // 다음 rb 를 위한 2 행 IFM 로드
+                                // 로드할 행 번호: 2*(rb_r)+3, 2*(rb_r)+4
+                                // (rb+1 은 rows 2(rb+1)-1..2(rb+1)+2 = 2rb+1..2rb+4 필요;
+                                //  이미 2rb+1, 2rb+2 는 이전 rb 로드 시 적재됨)
+                                rb_stream_rb_r <= rb_stream_rb_r + 12'd1;
+                                dma_target_r   <= DMA_TGT_IFM;
+                                // next_row_first = 2*rb_current + 3 (rb_r still = old value here)
+                                // rows_left = H - next_row_first
+                                // 2행 로드 vs 1행 로드 결정
+                                dma_rd_num_trans <= (({1'b0,lyr_ofm_h} - ({rb_stream_rb_r[10:0],1'b0} + 12'd3)) >= 12'd2) ?
+                                    req_ifm_rb_row_trans : req_ifm_rb_1row_trans;
+                                dma_rd_start_addr <= addr_ifm +
+                                    ((({1'b0,rb_stream_rb_r[10:0],1'b0} + 13'd3) * {1'b0, entries_per_row}) << 2);
+                                // dma_ifm_row_r 초기값: 다음 rb 의 첫 IFM row (= 2*rb_r_old + 3)
+                                // bank = first_row mod 4 → 올바른 순환 bank 에 적재
+                                rb_stream_ifm_first_r <= {rb_stream_rb_r[10:0], 1'b0} + 12'd3;
+                                dma_rd_start   <= 1'b1;
+                                stream_fil_cnt <= 12'd0;
+                                top_state      <= ST_DMA_IFM_ROW_WAIT;
+                            end else begin
+                                // 모든 rb 처리 완료 (또는 비-rb_stream) → ST_NEXT
+                                top_state <= ST_NEXT;
+                            end
                         end
                     end else if (lyr_conv_en && stream_wgt_mode) begin
                         // ── Weight Streaming 모드 (L6+: weight BRAM 초과) ─────────────
@@ -1027,6 +1106,20 @@ module yolo_engine #(
                 end
                 ST_DMA_OFM_WAIT: begin
                     if (dma_wr_done) top_state <= ST_NEXT;
+                end
+
+                // ---------- rb_stream: 다음 rb IFM 로딩 후 conv 재시작 ----------
+                ST_DMA_IFM_ROW_WAIT: begin
+                    if (dma_rd_done) begin
+                        // 다음 rb 에 대해 conv_top 재시작
+                        conv_start    <= 1'b1;
+                        // conv_h_half_r 는 이미 1 (rb_stream 초기화 시 설정)
+                        // stream_dma_addr = addr_ofm + rb_r × W_half × 4 (updated rb_r)
+                        stream_dma_addr <= addr_ofm +
+                            (({20'd0, rb_stream_rb_r} * {20'd0, lyr_ofm_w_half}) << 2);
+                        conv_pause_r  <= 1'b0;
+                        top_state     <= ST_DMA_OFM;
+                    end
                 end
 
                 ST_NEXT: begin

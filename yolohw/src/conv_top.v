@@ -39,7 +39,8 @@ module conv_top(
 
     // ===== layer 파라미터 =====
     input  [11:0]      i_ofm_w_half,   // OFM width  / 2 (2×2 block 수)
-    input  [11:0]      i_ofm_h_half,   // OFM height / 2
+    input  [11:0]      i_ofm_h_half,   // OFM height / 2 (this invocation 의 행 수)
+    input  [11:0]      i_row_start,    // 시작 row_idx (row-streaming: rb 번호, 일반: 0)
     input  [11:0]      i_co_total,     // 출력 filter 수
     input  [7:0]       i_acc_len,      // 한 spatial 의 누적 cycle 수
     input  [9:0]       i_wgt_base,     // weight buffer 시작 entry (288-bit entry)
@@ -96,9 +97,10 @@ module conv_top(
     reg [23:0] out_cnt;        // 현재 filter 내 발생한 mac_pixel_vld 수
     reg [25:0] frame_offset_r; // 누적 OFM offset (fil_idx 의 함수)
 
-    wire [23:0] q_total      = i_ofm_w_half * i_ofm_h_half;   // 작은 곱 (≤ 16×16 = 256)
+    wire [23:0] q_total      = i_ofm_w_half * i_ofm_h_half;   // 이번 invocation 의 spatial 수
+    wire [11:0] row_last_idx = i_row_start + i_ofm_h_half - 12'd1;  // 이번 invocation 마지막 rb
     wire        spatial_last = (col_idx == i_ofm_w_half - 1) &&
-                               (row_idx == i_ofm_h_half - 1) &&
+                               (row_idx == row_last_idx) &&
                                (acc_cyc == i_acc_len - 1);
     wire        fil_last     = (fil_idx == i_co_total - 1);
 
@@ -209,7 +211,7 @@ module conv_top(
             case (cstate)
                 ST_IDLE: if (i_start) begin
                     fil_idx        <= 12'd0;
-                    row_idx        <= 12'd0;
+                    row_idx        <= i_row_start;
                     col_idx        <= 12'd0;
                     acc_cyc        <= 8'd0;
                     wgt_addr_r     <= i_wgt_base;
@@ -226,7 +228,7 @@ module conv_top(
                     //   - 이 cycle 갱신: 다음 cycle 에 발사할 wgt_addr (= entry 1)
                     if (i_acc_len == 8'd1) wgt_addr_r <= wgt_base_r;
                     else                   wgt_addr_r <= wgt_base_r + 10'd1;
-                    row_idx <= 12'd0;
+                    row_idx <= i_row_start;
                     col_idx <= 12'd0;
                     acc_cyc <= 8'd0;
                     out_cnt <= 24'd0;
@@ -318,11 +320,11 @@ module conv_top(
     //   ST_RUN:  다음 cycle 의 (row, col, acc) 를 미리 발사하여 latency 보상.
     wire        lah_acc_last = (acc_cyc  == i_acc_len   - 8'd1);
     wire        lah_col_last = (col_idx  == i_ofm_w_half - 12'd1);
-    wire        lah_row_last = (row_idx  == i_ofm_h_half - 12'd1);
+    wire        lah_row_last = (row_idx  == row_last_idx);
     wire [7:0]  lah_acc = lah_acc_last ? 8'd0 : acc_cyc + 8'd1;
     wire [11:0] lah_col = lah_acc_last ? (lah_col_last ? 12'd0 : col_idx + 12'd1) : col_idx;
     wire [11:0] lah_row = (lah_acc_last && lah_col_last) ?
-                          (lah_row_last ? 12'd0 : row_idx + 12'd1) : row_idx;
+                          (lah_row_last ? i_row_start : row_idx + 12'd1) : row_idx;
 
     assign o_ifm_re    = (cstate == ST_LOAD) || (cstate == ST_RUN);
     assign o_ifm_row   = (cstate == ST_RUN) ? lah_row : row_idx;

@@ -8,7 +8,7 @@
 |-------|------|------|
 | **Phase 1** | MicroBlaze 제외 RTL 합성 완료 (yolo_engine 단독 22-layer 자동 추론) | ✅ 완료 |
 | **Phase 2** | TB 일괄 검증 + 정확도 튜닝 (shift 실측, conv_top_tb 0 mismatch, yolo_engine_tb 22-layer 완주) | ✅ 완료 |
-| Phase 3 | MicroBlaze + UART + DDR2 통합 | 대기 |
+| **Phase 3** | MicroBlaze + UART + DDR2 통합 | ✅ 코드 완성 / 보드 통합 대기 |
 | Phase 4 | 비트스트림 + 보드 데모 + 측정 | 대기 |
 
 ## 1. 하드웨어 / 소프트웨어 역할 분담
@@ -61,8 +61,8 @@ yolo_engine.v ★ TOP — 22-layer 자동 추론 FSM (14 states)
 │   │
 │   └── mac_kern.v                ← 144-MAC + 4× accumulator + 4× post_process
 │       ├── mac_stack.v           ← 36 mul × 4 spatial = 144 MAC
-│       │   ├── mul_dual.v × ~72  (DSP48 packing, 2 곱셈 동시)
-│       │   │   └── mul.v         ← w: INT8 signed, x: INT8 signed (Phase 2 수정: UINT8→INT8)
+│       │   ├── mul.v × 144       ← genvar(i=0..35) × 4 spatial = 144 (INT8×INT8→INT16)
+│       │   │                       w: INT8 signed, x: INT8 signed (Phase 2 수정: UINT8→INT8)
 │       │   └── add_tree_36in.v × 4
 │       └── post_process.v × 4    ← bias + ReLU + arith shift + UINT8 clip
 │
@@ -119,7 +119,7 @@ ST_DONE          → network_done assert
 ## 5. DRAM 메모리 맵 (Phase 1 software 약속)
 
 - `ctrl_reg1` = **dram_wgt_base** : weights + bias 영역 base
-  - bias 는 dram_wgt_base + 0x1_0000 offset (software 약속)
+  - bias 는 dram_wgt_base + **0x00A0_0000** offset (weight ~10 MB 이후 안전 위치)
 - `ctrl_reg2` = **dram_ifm_base** : input image (L0 IFM)
 - `ctrl_reg3` = **dram_ofm_base** : 모든 layer OFM 영역 (per-layer offset 적용)
 
@@ -162,19 +162,18 @@ ST_DONE          → network_done assert
 ## 7. 디렉토리 구조
 
 ```
-c:\AIX Project\
+Yolo_Accelerator/
 ├── ARCHITECTURE.md          (본 문서)
 ├── CLAUDE.md                (작업 가이드 + 치명적 규칙)
 ├── HANDOFF.md               (세션 핸드오프 노트)
 ├── skeleton/                (C 골든 레퍼런스, hex 파일 생성기)
-├── 참고자료/                (사용자 자료)
+├── .recycle_bin/            (소프트 삭제 보관함, REASON.md 참조)
 └── yolohw/
-    ├── fpga/                Vivado 프로젝트 + BMG IP TCL
-    ├── src/                 활성 RTL (19 파일)
-    ├── sim/                 활성 TB (5 파일) + hex 데이터 폴더
-    ├── src_backup/          legacy RTL 보존
-    ├── sim_backup/          legacy TB 보존
-    └── _archive/            arxiv_screenshots, claude_web_legacy
+    ├── fpga/                Vivado 프로젝트 + BMG IP TCL + Vitis firmware
+    ├── firmware/            host.py (Host PC UART 클라이언트)
+    ├── src/                 활성 RTL (18 파일, legacy 제거 완료)
+    ├── testbench/           활성 TB (13 파일) + hex 데이터 + sim_dram_model
+    └── sim/                 iverilog 컴파일 출력 전용 (.gitignore)
 ```
 
 ## 8. Phase 1 알려진 한계 / Phase 2 점검 대상
