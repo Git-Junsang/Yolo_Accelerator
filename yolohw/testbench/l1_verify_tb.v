@@ -370,7 +370,7 @@ module l1_verify_tb;
         // L1 시작 위치로 강제 진입
         @(posedge clk);
         force u_yolo_engine.layer_idx = 5'd1;
-        force u_yolo_engine.fi_r      = 5'd0;
+        force u_yolo_engine.fi_r      = 12'd0;
         force u_yolo_engine.state_r   = 5'd13;   // S_L1_FI_LOAD
         $display("[L1V-TB][%0t] Phase A : force layer_idx=1, state_r=S_L1_FI_LOAD", $time);
         @(posedge clk);

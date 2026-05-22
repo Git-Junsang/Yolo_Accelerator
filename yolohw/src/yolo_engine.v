@@ -242,8 +242,71 @@ module yolo_engine #(
     // 공통: per-filter weight 바이트 stride = acc_len × 64
     localparam [19:0] L0_WGT_PER_FI_WORDS = 20'd16;    // = 1 × 16
     localparam [19:0] L2_WGT_PER_FI_WORDS = 20'd64;    // = 4 × 16
+    localparam [19:0] L4_WGT_PER_FI_WORDS = 20'd128;   // = 8 × 16
     localparam [31:0] L0_WGT_PER_FI_BYTES = 32'd64;    // = 16 × 4
     localparam [31:0] L2_WGT_PER_FI_BYTES = 32'd256;   // = 64 × 4
+    localparam [31:0] L4_WGT_PER_FI_BYTES = 32'd512;   // = 128 × 4
+
+    //----------------------------------------------------------------
+    // L3 constants (POOL_S2, 32ch, 128 → 64)
+    //----------------------------------------------------------------
+    localparam [5:0]  L3_CO              = 6'd32;
+    localparam [19:0] L3_IFM_WORDS_PER_FI = 20'd4096;   // 128×128/4 word per fi
+    localparam [19:0] L3_OFM_WORDS_PER_FI = 20'd1024;   // 64×64/4 word per fi
+    localparam [31:0] L3_OFM_BYTE_BASE    = 32'h00200000;
+    localparam [31:0] L2_OFM_FI_BYTE      = 32'd16384;   // L2 OFM per-fi byte stride (= 4096 word × 4)
+    localparam [31:0] L3_OFM_FI_BYTE      = 32'd4096;    // L3 OFM per-fi byte stride
+
+    //----------------------------------------------------------------
+    // L4 constants (CONV3x3, Ci=32, Co=64, 64×64 → 64×64)
+    //----------------------------------------------------------------
+    localparam [11:0] L4_W        = 12'd64;
+    localparam [11:0] L4_H        = 12'd64;
+    localparam [11:0] L4_W_HALF   = 12'd32;
+    localparam [11:0] L4_H_HALF   = 12'd32;
+    localparam [11:0] L4_W_BLOCKS = 12'd16;
+    localparam [11:0] L4_CO       = 12'd64;
+    localparam [7:0]  L4_ACC_LEN  = 8'd8;
+    localparam [4:0]  L4_SHIFT    = 5'd6;       // scale 0x40 = 64
+    localparam [7:0]  L4_CI_GRPS  = 8'd8;
+    localparam [11:0] L4_EIR_PER_ROW = 12'd128; // 16 × 8 = same as L2!
+
+    localparam [19:0] L4_BIAS_DMA_WORDS = 20'd64;
+    localparam [19:0] L4_IFM_INIT_WORDS = 20'd1536;     // 3 × 16 × 8 × 4 (= same 형식)
+    localparam [19:0] L4_IFM_NEXT_WORDS = 20'd1024;
+    localparam [19:0] L4_OFM_FIL_WORDS  = 20'd32;       // W_HALF = 32
+
+    // L4 weight 시작 위치: blk_off=144 (gen_sim_dram.py) → byte = 144 × 64 = 9216
+    localparam [31:0] L4_WGT_BYTE_OFF  = 32'd9216;
+    // L4 bias 시작 위치: L0(16) + L2(32) = 48 → byte 48 × 4 = 192
+    localparam [31:0] L4_BIAS_BYTE_OFF = 32'd192;
+    localparam [31:0] L4_OFM_BYTE_BASE = 32'h00240000;
+    localparam [11:0] L4_BIAS_ENTRY_BASE = 12'd48;
+    localparam [31:0] L4_IFM_BYTE_BASE = 32'h00220000;   // REPACK 결과
+
+    //----------------------------------------------------------------
+    // L5 constants (POOL_S2, 64ch, 64 → 32)
+    //----------------------------------------------------------------
+    localparam [6:0]  L5_CO              = 7'd64;
+    localparam [19:0] L5_IFM_WORDS_PER_FI = 20'd1024;   // 64×64/4
+    localparam [19:0] L5_OFM_WORDS_PER_FI = 20'd256;    // 32×32/4
+    localparam [31:0] L5_OFM_BYTE_BASE    = 32'h00280000;
+    localparam [31:0] L4_OFM_FI_BYTE      = 32'd4096;    // L4 OFM per-fi byte stride
+    localparam [31:0] L5_OFM_FI_BYTE      = 32'd1024;    // L5 OFM per-fi byte stride
+
+    //----------------------------------------------------------------
+    // REPACK L3→L4 constants
+    //   L3 OFM (chan-major) → L4 IFM (NHWC packed)
+    //   - per ch per row: 16 word = 64 byte
+    //   - per row total entries: 16 col_b × 8 ci_g = 128 (same as L2!)
+    //   - per row total bytes: 2048 (same as L2)
+    //   - per ci_g entry bytes: 16 col_b × 16 byte = 256
+    //----------------------------------------------------------------
+    localparam [31:0] L3_OFM_ROW_BYTE        = 32'd64;     // 16 word × 4 byte (per ch per row)
+    localparam [31:0] L4_IFM_ROW_BYTE        = 32'd2048;
+    localparam [31:0] L4_IFM_CIG_BYTE_PER_R  = 32'd256;    // 16 entry × 16 byte
+    localparam [19:0] L4_RP_LOAD_WORDS_PER_BURST = 20'd16; // 1 ch × 1 row = 16 word
+    localparam [19:0] L4_RP_STORE_WORDS_PER_CIG  = 20'd64; // 16 entry × 4 word
 
     //----------------------------------------------------------------
     // AXI slave (control reg)
@@ -280,8 +343,13 @@ module yolo_engine #(
 
     //----------------------------------------------------------------
     // Layer counters
-    //   0 = L0 active, 1 = L0 done / L1 active, 2 = L1 done / REPACK / L2 active,
-    //   3 = L2 done (network end)
+    //   0 = L0 (conv) active
+    //   1 = L0 done / L1 (pool) active
+    //   2 = L1 done / REPACK L1→L2 / L2 (conv) active
+    //   3 = L2 done / L3 (pool) active
+    //   4 = L3 done / REPACK L3→L4 / L4 (conv) active
+    //   5 = L4 done / L5 (pool) active
+    //   6 = L5 done (network end for this batch)
     //----------------------------------------------------------------
     reg [4:0] layer_idx;
 
@@ -330,42 +398,87 @@ module yolo_engine #(
                S_DONE              = 5'd28;
 
     reg [4:0]  state_r;
-    reg [11:0] rb_r;       // 0..127 (L0) / 0..63 (L2)
-    reg [4:0]  fi_r;       // 0..31 (L2 max) / 0..15 (L0, L1)
+    reg [11:0] rb_r;       // 0..127 (L0) / 0..63 (L2/L4) / ...
+    reg [11:0] fi_r;       // 0..63 (L5) / 0..255 (L8) / ... — full width
 
     //----------------------------------------------------------------
-    // conv_phase_r — 현재 conv FSM 이 누구를 처리하는지 (L0 / L2)
-    //   0 = L0, 2 = L2 — 그 외 값은 conv FSM 진입 안 함
+    // conv_phase_r — 현재 conv FSM 이 누구를 처리하는지 (L0/L2/L4)
+    //   값: 0=L0, 2=L2, 4=L4 (REPACK 진입 시 미리 set)
     //----------------------------------------------------------------
     reg [4:0] conv_phase_r;
     wire is_conv_l0 = (conv_phase_r == 5'd0);
     wire is_conv_l2 = (conv_phase_r == 5'd2);
+    wire is_conv_l4 = (conv_phase_r == 5'd4);
+
+    //----------------------------------------------------------------
+    // pool_phase_r — 현재 pool FSM (L1/L3/L5)
+    //   값: 1=L1, 3=L3, 5=L5
+    //----------------------------------------------------------------
+    reg [4:0] pool_phase_r;
+    wire is_pool_l1 = (pool_phase_r == 5'd1);
+    wire is_pool_l3 = (pool_phase_r == 5'd3);
+    wire is_pool_l5 = (pool_phase_r == 5'd5);
 
     //----------------------------------------------------------------
     // conv 파라미터 mux (현재 conv 레이어 기준)
     //----------------------------------------------------------------
-    wire [11:0] cur_w_blocks   = is_conv_l2 ? L2_W_BLOCKS : L0_W_BLOCKS;
-    wire [11:0] cur_w          = is_conv_l2 ? L2_W        : L0_W;
-    wire [11:0] cur_h          = is_conv_l2 ? L2_H        : L0_H;
-    wire [11:0] cur_w_half     = is_conv_l2 ? L2_W_HALF   : L0_W_HALF;
-    wire [11:0] cur_h_half     = is_conv_l2 ? L2_H_HALF   : L0_H_HALF;
-    wire [11:0] cur_co         = is_conv_l2 ? L2_CO       : L0_CO;
-    wire [7:0]  cur_acc_len    = is_conv_l2 ? L2_ACC_LEN  : L0_ACC_LEN;
-    wire [4:0]  cur_shift      = is_conv_l2 ? L2_SHIFT    : L0_SHIFT;
-    wire [7:0]  cur_ci_grps    = is_conv_l2 ? L2_CI_GRPS  : L0_CI_GRPS;
-    wire [11:0] cur_eir_per_row= is_conv_l2 ? L2_EIR_PER_ROW : L0_W_BLOCKS;
+    wire [11:0] cur_w_blocks   = is_conv_l4 ? L4_W_BLOCKS : is_conv_l2 ? L2_W_BLOCKS : L0_W_BLOCKS;
+    wire [11:0] cur_w          = is_conv_l4 ? L4_W        : is_conv_l2 ? L2_W        : L0_W;
+    wire [11:0] cur_h          = is_conv_l4 ? L4_H        : is_conv_l2 ? L2_H        : L0_H;
+    wire [11:0] cur_w_half     = is_conv_l4 ? L4_W_HALF   : is_conv_l2 ? L2_W_HALF   : L0_W_HALF;
+    wire [11:0] cur_h_half     = is_conv_l4 ? L4_H_HALF   : is_conv_l2 ? L2_H_HALF   : L0_H_HALF;
+    wire [11:0] cur_co         = is_conv_l4 ? L4_CO       : is_conv_l2 ? L2_CO       : L0_CO;
+    wire [7:0]  cur_acc_len    = is_conv_l4 ? L4_ACC_LEN  : is_conv_l2 ? L2_ACC_LEN  : L0_ACC_LEN;
+    wire [4:0]  cur_shift      = is_conv_l4 ? L4_SHIFT    : is_conv_l2 ? L2_SHIFT    : L0_SHIFT;
+    wire [7:0]  cur_ci_grps    = is_conv_l4 ? L4_CI_GRPS  : is_conv_l2 ? L2_CI_GRPS  : L0_CI_GRPS;
+    wire [11:0] cur_eir_per_row= is_conv_l4 ? L4_EIR_PER_ROW : is_conv_l2 ? L2_EIR_PER_ROW : L0_W_BLOCKS;
 
     // per-filter weight DMA size (streaming): acc_len 에 의존
-    wire [19:0] cur_wgt_per_fi_words = is_conv_l2 ? L2_WGT_PER_FI_WORDS : L0_WGT_PER_FI_WORDS;
-    wire [31:0] cur_wgt_per_fi_bytes = is_conv_l2 ? L2_WGT_PER_FI_BYTES : L0_WGT_PER_FI_BYTES;
+    wire [19:0] cur_wgt_per_fi_words = is_conv_l4 ? L4_WGT_PER_FI_WORDS : is_conv_l2 ? L2_WGT_PER_FI_WORDS : L0_WGT_PER_FI_WORDS;
+    wire [31:0] cur_wgt_per_fi_bytes = is_conv_l4 ? L4_WGT_PER_FI_BYTES : is_conv_l2 ? L2_WGT_PER_FI_BYTES : L0_WGT_PER_FI_BYTES;
     // 다른 DMA word count (per layer, 1 회)
-    wire [19:0] cur_bias_dma   = is_conv_l2 ? L2_BIAS_DMA_WORDS : BIAS_DMA_WORDS;
-    wire [19:0] cur_ifm_init   = is_conv_l2 ? L2_IFM_INIT_WORDS : IFM_INIT_WORDS;
-    wire [19:0] cur_ifm_next   = is_conv_l2 ? L2_IFM_NEXT_WORDS : IFM_NEXT_WORDS;
-    wire [19:0] cur_ofm_fil    = is_conv_l2 ? L2_OFM_FIL_WORDS  : OFM_FIL_WORDS;
+    wire [19:0] cur_bias_dma   = is_conv_l4 ? L4_BIAS_DMA_WORDS : is_conv_l2 ? L2_BIAS_DMA_WORDS : BIAS_DMA_WORDS;
+    wire [19:0] cur_ifm_init   = is_conv_l4 ? L4_IFM_INIT_WORDS : is_conv_l2 ? L2_IFM_INIT_WORDS : IFM_INIT_WORDS;
+    wire [19:0] cur_ifm_next   = is_conv_l4 ? L4_IFM_NEXT_WORDS : is_conv_l2 ? L2_IFM_NEXT_WORDS : IFM_NEXT_WORDS;
+    wire [19:0] cur_ofm_fil    = is_conv_l4 ? L4_OFM_FIL_WORDS  : is_conv_l2 ? L2_OFM_FIL_WORDS  : OFM_FIL_WORDS;
 
     // BRAM bias entry base (wgt 는 streaming 으로 항상 0 사용)
-    wire [11:0] cur_bias_entry_base = is_conv_l2 ? L2_BIAS_ENTRY_BASE : 12'd0;
+    wire [11:0] cur_bias_entry_base = is_conv_l4 ? L4_BIAS_ENTRY_BASE :
+                                      is_conv_l2 ? L2_BIAS_ENTRY_BASE : 12'd0;
+
+    //----------------------------------------------------------------
+    // pool 파라미터 mux (현재 pool 레이어 기준)
+    //----------------------------------------------------------------
+    wire [5:0]  cur_pool_co            = is_pool_l5 ? L5_CO[5:0] :
+                                         is_pool_l3 ? L3_CO[5:0] : {1'b0, L1_CO};
+    wire [19:0] cur_pool_ifm_per_fi    = is_pool_l5 ? L5_IFM_WORDS_PER_FI :
+                                         is_pool_l3 ? L3_IFM_WORDS_PER_FI : L1_IFM_WORDS_PER_FI;
+    wire [19:0] cur_pool_ofm_per_fi    = is_pool_l5 ? L5_OFM_WORDS_PER_FI :
+                                         is_pool_l3 ? L3_OFM_WORDS_PER_FI : L1_OFM_WORDS_PER_FI;
+    wire [31:0] cur_pool_ifm_base_byte = is_pool_l5 ? L4_OFM_BYTE_BASE :
+                                         is_pool_l3 ? L2_OFM_BYTE_BASE : 32'd0;  // L1 IFM = L0 OFM @ 0
+    wire [31:0] cur_pool_ofm_base_byte = is_pool_l5 ? L5_OFM_BYTE_BASE :
+                                         is_pool_l3 ? L3_OFM_BYTE_BASE : L1_OFM_BYTE_BASE;
+    wire [31:0] cur_pool_ifm_fi_byte   = is_pool_l5 ? L4_OFM_FI_BYTE :
+                                         is_pool_l3 ? L2_OFM_FI_BYTE : L0_OFM_FI_BYTE;
+    wire [31:0] cur_pool_ofm_fi_byte   = is_pool_l5 ? L5_OFM_FI_BYTE :
+                                         is_pool_l3 ? L3_OFM_FI_BYTE : L1_OFM_FI_BYTE;
+
+    //----------------------------------------------------------------
+    // REPACK 파라미터 mux (현재 진입할 conv 의 phase 기준)
+    //   conv_phase_r 는 REPACK 시작 직전에 set됨.
+    //----------------------------------------------------------------
+    wire [31:0] cur_rp_src_base_byte   = is_conv_l4 ? L3_OFM_BYTE_BASE : L1_OFM_BYTE_BASE;
+    wire [31:0] cur_rp_dst_base_byte   = is_conv_l4 ? L4_IFM_BYTE_BASE : L2_IFM_BYTE_BASE;
+    wire [31:0] cur_rp_src_row_byte    = is_conv_l4 ? L3_OFM_ROW_BYTE  : L1_OFM_ROW_BYTE;
+    wire [31:0] cur_rp_src_ch_byte     = is_conv_l4 ? L3_OFM_FI_BYTE   : L1_OFM_FI_BYTE;
+    wire [31:0] cur_rp_dst_row_byte    = is_conv_l4 ? L4_IFM_ROW_BYTE  : L2_IFM_ROW_BYTE;
+    wire [31:0] cur_rp_dst_cig_byte    = is_conv_l4 ? L4_IFM_CIG_BYTE_PER_R : L2_IFM_CIG_BYTE_PER_R;
+    wire [19:0] cur_rp_load_words      = is_conv_l4 ? L4_RP_LOAD_WORDS_PER_BURST : REPACK_LOAD_WORDS_PER_BURST;
+    wire [19:0] cur_rp_store_words     = is_conv_l4 ? L4_RP_STORE_WORDS_PER_CIG  : REPACK_STORE_WORDS_PER_CIG;
+    wire [11:0] cur_rp_total_rows      = is_conv_l4 ? L4_H[11:0]       : L2_H[11:0];   // = layer height
+    wire [2:0]  cur_rp_total_cig_minus1= is_conv_l4 ? 3'd7             : 3'd3;          // ci_groups - 1
+    wire [4:0]  cur_rp_w_blocks_minus1 = is_conv_l4 ? 5'd15            : 5'd31;         // W_BLK - 1
 
     //----------------------------------------------------------------
     // DMA target enum (for asm/counter decoding)
@@ -602,7 +715,7 @@ module yolo_engine #(
     //   매 filter 의 weight 가 BRAM[0..acc_len-1] (read entry 기준) 에 fresh 적재됨.
     //   conv_top.i_stream_wgt_mode = 1 (filter 전환 시 wgt_base 동결)
     wire [9:0]  conv_wgt_base  = 10'd0;
-    wire [11:0] conv_bias_base = cur_bias_entry_base + {7'd0, fi_r};
+    wire [11:0] conv_bias_base = cur_bias_entry_base + fi_r;
 
     conv_top u_conv (
         .clk(clk), .rstn(rstn),
@@ -696,7 +809,7 @@ module yolo_engine #(
         .rstn             (rstn),
         .i_start          (pool_start_r),
         .o_done           (pool_done),
-        .i_total_in_words (L1_IFM_WORDS_PER_FI),
+        .i_total_in_words (cur_pool_ifm_per_fi),
         .o_rd_en          (pool_rd_en),
         .o_rd_addr        (pool_rd_addr),
         .i_rd_data        (ofm_rd_data),
@@ -757,7 +870,7 @@ module yolo_engine #(
 
                 if (rp_gen_phase_r == 4'd8) begin
                     rp_gen_phase_r <= 4'd0;
-                    if (rp_gen_cb_r == 5'd31) begin
+                    if (rp_gen_cb_r == cur_rp_w_blocks_minus1) begin
                         rp_gen_done_r <= 1'b1;
                     end else begin
                         rp_gen_cb_r <= rp_gen_cb_r + 5'd1;
@@ -769,10 +882,13 @@ module yolo_engine #(
         end
     end
 
-    // GEN 의 Port B read addr (phase 0..3) — scratch_a 의 ch_l × 32 + col_b
-    //   ch_l = phase[1:0], col_b = cb_r[4:0]
-    //   addr = {ch_l, col_b}  (총 7-bit, 16-bit zero-pad)
-    wire [15:0] rp_gen_rd_addr = SCRATCH_A_BASE + {9'd0, rp_gen_phase_r[1:0], rp_gen_cb_r[4:0]};
+    // GEN 의 Port B read addr (phase 0..3) — scratch_a 의 ch_l × W_BLK + col_b
+    //   ch_l = phase[1:0]
+    //   L1→L2: W_BLK=32, addr = {ch_l, col_b[4:0]}  (7-bit)
+    //   L3→L4: W_BLK=16, addr = {ch_l, col_b[3:0]}  (6-bit)
+    wire [15:0] rp_gen_rd_addr = is_conv_l4 ?
+        (SCRATCH_A_BASE + {10'd0, rp_gen_phase_r[1:0], rp_gen_cb_r[3:0]}) :
+        (SCRATCH_A_BASE + {9'd0,  rp_gen_phase_r[1:0], rp_gen_cb_r[4:0]});
     wire        rp_gen_rd_en   = rp_gen_phase && (rp_gen_phase_r <= 4'd3);
 
     // GEN 의 Port A write — phase 5..8 에서 transposed word 출력
@@ -784,7 +900,11 @@ module yolo_engine #(
         (rp_gen_phase_r == 4'd7) ? 2'd2 :
         (rp_gen_phase_r == 4'd8) ? 2'd3 : 2'd0;
 
-    wire [15:0] rp_gen_wr_addr = SCRATCH_B_BASE + {9'd0, rp_gen_cb_r[4:0], rp_gen_col_l};
+    // L1→L2: col_b[4:0]*4 + col_l = {col_b[4:0], col_l}
+    // L3→L4: col_b[3:0]*4 + col_l = {col_b[3:0], col_l}
+    wire [15:0] rp_gen_wr_addr = is_conv_l4 ?
+        (SCRATCH_B_BASE + {10'd0, rp_gen_cb_r[3:0], rp_gen_col_l}) :
+        (SCRATCH_B_BASE + {9'd0,  rp_gen_cb_r[4:0], rp_gen_col_l});
     wire [31:0] rp_gen_wr_data = {
         ch_word_3_r[rp_gen_col_l*8 +: 8],
         ch_word_2_r[rp_gen_col_l*8 +: 8],
@@ -835,28 +955,32 @@ module yolo_engine #(
     // DRAM 주소 계산
     //----------------------------------------------------------------
     // 현재 layer 의 weight base byte (DRAM):
-    //   L0: dram_wgt_base + 0
-    //   L2: dram_wgt_base + 1024
+    //   L0: 0, L2: 1024, L4: 9216
     wire [31:0] cur_wgt_layer_base = dram_wgt_base +
-                                     (is_conv_l2 ? L2_WGT_BYTE_OFF : 32'd0);
+                                     (is_conv_l4 ? L4_WGT_BYTE_OFF :
+                                      is_conv_l2 ? L2_WGT_BYTE_OFF : 32'd0);
     // per-filter weight DRAM byte addr = layer_base + fi × per_fi_bytes
-    wire [31:0] addr_wgt_fi = cur_wgt_layer_base + ({27'd0, fi_r} * cur_wgt_per_fi_bytes);
+    wire [31:0] addr_wgt_fi = cur_wgt_layer_base + ({20'd0, fi_r} * cur_wgt_per_fi_bytes);
 
-    // Bias base   : dram_wgt_base + 0x00A00000 (+ L2 offset 64 byte)
-    wire [31:0] addr_bias = dram_wgt_base + 32'h00A00000 +
-                            (is_conv_l2 ? L2_BIAS_BYTE_OFF : 32'd0);
+    // Bias base byte offset (within bias DRAM region)
+    //   L0: 0, L2: 64, L4: 192
+    wire [31:0] cur_bias_off = is_conv_l4 ? L4_BIAS_BYTE_OFF :
+                               is_conv_l2 ? L2_BIAS_BYTE_OFF : 32'd0;
+    wire [31:0] addr_bias = dram_wgt_base + 32'h00A00000 + cur_bias_off;
 
-    // IFM row stride byte: L0=1024 (W*4ch=256*4), L2=2048 (128*16ch)
-    //   ifm_first_row 는 ifm_first_row_for_rb 와 row stride 의 곱.
-    //   row stride : L0=1024 (<<10), L2=2048 (<<11)
+    // IFM row stride byte:
+    //   L0: W*Ci_pad = 256*4 = 1024 byte/row (shift 10)
+    //   L2: 128*16 = 2048 byte/row (shift 11)
+    //   L4: 64*32  = 2048 byte/row (shift 11)
+    //   (L6+ 도 모두 2048 byte/row — W*Ci 가 상수)
     wire [11:0] ifm_first_row_for_rb = (rb_r == 12'd0) ? 12'd0 : ({rb_r[10:0], 1'b0}) + 12'd1;
-    wire [31:0] cur_ifm_base = is_conv_l2 ?
-                               (dram_ofm_base + L2_IFM_BYTE_BASE) :
-                               dram_ifm_base;
+    wire [31:0] cur_ifm_base = is_conv_l4 ? (dram_ofm_base + L4_IFM_BYTE_BASE) :
+                               is_conv_l2 ? (dram_ofm_base + L2_IFM_BYTE_BASE) :
+                                            dram_ifm_base;
     wire [31:0] addr_ifm_byte = cur_ifm_base +
-                                (is_conv_l2 ?
-                                   ({20'd0, ifm_first_row_for_rb} << 11) :
-                                   ({20'd0, ifm_first_row_for_rb} << 10));
+                                (is_conv_l0 ?
+                                   ({20'd0, ifm_first_row_for_rb} << 10) :
+                                   ({20'd0, ifm_first_row_for_rb} << 11));
 
     // OFM per (rb, fi):
     //   L0: ofm_base + fi*65536 + rb*512
@@ -865,36 +989,51 @@ module yolo_engine #(
     //   L2: ofm_base + L2_OFM_BYTE_BASE + fi*16384 + rb*256
     //     fi*4096 word (W_HALF^2=4096) × 4 = 16384 byte = fi << 14
     //     rb*64   word (W_HALF=64) × 4 = 256 byte = rb << 8
-    wire [31:0] addr_ofm_byte = is_conv_l2 ?
-        (dram_ofm_base + L2_OFM_BYTE_BASE + ({13'd0, fi_r, 14'd0}) + ({18'd0, rb_r, 8'd0}))
-      : (dram_ofm_base + ({11'd0, fi_r, 16'd0}) + ({16'd0, rb_r, 9'b0}));
+    // OFM per (rb, fi) DRAM byte addr
+    //   L0: ofm_base                                 + fi*65536 + rb*512
+    //   L2: ofm_base + L2_OFM_BYTE_BASE              + fi*16384 + rb*256
+    //   L4: ofm_base + L4_OFM_BYTE_BASE              + fi*4096  + rb*128
+    wire [31:0] cur_ofm_layer_base = is_conv_l4 ? (dram_ofm_base + L4_OFM_BYTE_BASE) :
+                                     is_conv_l2 ? (dram_ofm_base + L2_OFM_BYTE_BASE) :
+                                                  dram_ofm_base;
+    // per fi byte = (W_HALF*H_HALF*4)  =  L0:65536, L2:16384, L4:4096
+    wire [31:0] cur_ofm_fi_byte = is_conv_l4 ? 32'd4096 :
+                                  is_conv_l2 ? 32'd16384 : 32'd65536;
+    // per rb byte = W_HALF*4          =  L0:512,   L2:256,   L4:128
+    wire [31:0] cur_ofm_rb_byte = is_conv_l4 ? 32'd128 :
+                                  is_conv_l2 ? 32'd256 : 32'd512;
+    wire [31:0] addr_ofm_byte = cur_ofm_layer_base +
+                                ({20'd0, fi_r} * cur_ofm_fi_byte) +
+                                ({20'd0, rb_r} * cur_ofm_rb_byte);
 
-    // L1 IFM (= L0 OFM[fi]) : dram_ofm_base + fi × 65536 byte
-    wire [31:0] addr_l1_ifm_byte = dram_ofm_base + ({11'd0, fi_r} * L0_OFM_FI_BYTE);
-    // L1 OFM[fi]            : dram_ofm_base + 1,048,576 + fi × 16384 byte
-    wire [31:0] addr_l1_ofm_byte = dram_ofm_base + L1_OFM_BYTE_BASE + ({11'd0, fi_r} * L1_OFM_FI_BYTE);
+    // Pool IFM (= 이전 layer 의 OFM[fi]) : base + fi × ifm_fi_byte
+    wire [31:0] addr_pool_ifm_byte = dram_ofm_base + cur_pool_ifm_base_byte +
+                                     ({20'd0, fi_r} * cur_pool_ifm_fi_byte);
+    // Pool OFM[fi]            : base + fi × ofm_fi_byte
+    wire [31:0] addr_pool_ofm_byte = dram_ofm_base + cur_pool_ofm_base_byte +
+                                     ({20'd0, fi_r} * cur_pool_ofm_fi_byte);
 
     //----------------------------------------------------------------
     // REPACK 주소 (row r, ci_g, ch_l within group)
     //----------------------------------------------------------------
-    reg [11:0] rp_row_r;     // 0..127
-    reg [2:0]  rp_cig_r;     // 0..3 (ci_group)
-    reg [2:0]  rp_chl_r;     // 0..3 (ch within group, Phase A load 시)
+    reg [11:0] rp_row_r;     // 0..127 (L2 진입) / 0..63 (L4 진입)
+    reg [3:0]  rp_cig_r;     // 0..7 (L4 ci_g 까지 cover)
+    reg [2:0]  rp_chl_r;     // 0..3 (ch within ci_group)
 
-    // REPACK Load 주소: L1 OFM 의 (ch_full=cig*4+chl, row=rp_row, col=0..31) 한 row
-    //   byte_addr = L1_OFM_BYTE_BASE + ch_full*16384 + rp_row*128
-    wire [4:0]  rp_chfull = {rp_cig_r[1:0], rp_chl_r[1:0]};
+    // REPACK Load 주소: 이전 pool 의 OFM[ch_full=cig*4+chl, row=rp_row, col=0..(W_BLK-1)] 한 row
+    //   byte_addr = src_base + ch_full*src_ch_byte + rp_row*src_row_byte
+    wire [4:0]  rp_chfull = {rp_cig_r[2:0], rp_chl_r[1:0]};
     wire [31:0] addr_rp_load_byte =
-        dram_ofm_base + L1_OFM_BYTE_BASE +
-        ({11'd0, rp_chfull} * 32'd16384) +
-        ({20'd0, rp_row_r} * L1_OFM_ROW_BYTE);
+        dram_ofm_base + cur_rp_src_base_byte +
+        ({11'd0, rp_chfull} * cur_rp_src_ch_byte) +
+        ({20'd0, rp_row_r} * cur_rp_src_row_byte);
 
-    // REPACK Store 주소: L2 IFM 의 (row=rp_row, ci_g=rp_cig, col_b=0..31)
-    //   byte_addr = L2_IFM_BYTE_BASE + rp_row*2048 + rp_cig*512
+    // REPACK Store 주소: 다음 conv 의 IFM (NHWC packed)
+    //   byte_addr = dst_base + rp_row*dst_row_byte + rp_cig*dst_cig_byte
     wire [31:0] addr_rp_store_byte =
-        dram_ofm_base + L2_IFM_BYTE_BASE +
-        ({20'd0, rp_row_r} * L2_IFM_ROW_BYTE) +
-        ({29'd0, rp_cig_r} * L2_IFM_CIG_BYTE_PER_R);
+        dram_ofm_base + cur_rp_dst_base_byte +
+        ({20'd0, rp_row_r} * cur_rp_dst_row_byte) +
+        ({28'd0, rp_cig_r} * cur_rp_dst_cig_byte);
 
     //----------------------------------------------------------------
     // Main FSM
@@ -907,9 +1046,10 @@ module yolo_engine #(
         if (!rstn) begin
             state_r                 <= S_IDLE;
             rb_r                    <= 12'd0;
-            fi_r                    <= 5'd0;
+            fi_r                    <= 12'd0;
             layer_idx               <= 5'd0;
             conv_phase_r            <= 5'd0;
+            pool_phase_r            <= 5'd0;
             dma_target_r            <= DMA_TGT_NONE;
             dma_rd_start            <= 1'b0;
             dma_rd_num_trans        <= 20'd0;
@@ -923,7 +1063,7 @@ module yolo_engine #(
             pool_start_r            <= 1'b0;
             dma_ifm_row_start_r     <= 12'd0;
             rp_row_r                <= 12'd0;
-            rp_cig_r                <= 3'd0;
+            rp_cig_r                <= 4'd0;
             rp_chl_r                <= 3'd0;
             network_done_r          <= 1'b0;
         end else begin
@@ -938,9 +1078,10 @@ module yolo_engine #(
                 S_IDLE: begin
                     if (ap_start) begin
                         rb_r            <= 12'd0;
-                        fi_r            <= 5'd0;
+                        fi_r            <= 12'd0;
                         layer_idx       <= 5'd0;
                         conv_phase_r    <= 5'd0;
+                        pool_phase_r    <= 5'd0;
                         network_done_r  <= 1'b0;
                         state_r         <= S_LOAD_BIAS;
                     end
@@ -976,7 +1117,7 @@ module yolo_engine #(
                 end
                 S_RB_DMA_IFM_WAIT: begin
                     if (dma_rd_done) begin
-                        fi_r    <= 5'd0;
+                        fi_r    <= 12'd0;
                         state_r <= S_FI_LOAD_WGT;
                     end
                 end
@@ -1016,10 +1157,10 @@ module yolo_engine #(
                 end
                 S_FIL_DMA_STORE_WAIT: begin
                     if (dma_wr_done) begin
-                        if (fi_r == cur_co[4:0] - 5'd1) begin
+                        if (fi_r == cur_co - 12'd1) begin
                             state_r <= S_RB_NEXT;
                         end else begin
-                            fi_r    <= fi_r + 5'd1;
+                            fi_r    <= fi_r + 12'd1;
                             state_r <= S_FI_LOAD_WGT;
                         end
                     end
@@ -1036,32 +1177,37 @@ module yolo_engine #(
                 end
 
                 //------------------------------------------------
-                // Conv 완료 → 다음 phase 분기
-                //   L0 (conv_phase_r=0) 완료 → L1 진입
-                //   L2 (conv_phase_r=2) 완료 → 최종 종료
+                // Conv 완료 → pool 진입
+                //   L0 (cp=0) → L1 pool   (pool_phase_r=1, layer_idx=1)
+                //   L2 (cp=2) → L3 pool   (pool_phase_r=3, layer_idx=3)
+                //   L4 (cp=4) → L5 pool   (pool_phase_r=5, layer_idx=5)
                 //------------------------------------------------
                 S_CONV_DONE: begin
+                    fi_r         <= 12'd0;
+                    dma_target_r <= DMA_TGT_NONE;
+                    state_r      <= S_L1_FI_LOAD;    // pool 진입 (generic)
                     if (conv_phase_r == 5'd0) begin
                         layer_idx    <= 5'd1;
-                        fi_r         <= 5'd0;
-                        dma_target_r <= DMA_TGT_NONE;
-                        state_r      <= S_L1_FI_LOAD;
+                        pool_phase_r <= 5'd1;
+                    end else if (conv_phase_r == 5'd2) begin
+                        layer_idx    <= 5'd3;
+                        pool_phase_r <= 5'd3;
                     end else begin
-                        // conv_phase_r == 5'd2 → L2 완료
-                        layer_idx      <= 5'd3;
-                        network_done_r <= 1'b1;
-                        state_r        <= S_DONE;
+                        // conv_phase_r == 5'd4 → L5 pool
+                        layer_idx    <= 5'd5;
+                        pool_phase_r <= 5'd5;
                     end
                 end
 
                 //------------------------------------------------
-                // L1 : POOL_S2 — fi 별 (load → pool → store)
+                // Pool (L1/L3/L5) — fi 별 (load → pool → store)
+                //   pool_phase_r 로 layer 구별, cur_pool_* 로 파라미터 mux
                 //------------------------------------------------
                 S_L1_FI_LOAD: begin
                     dma_target_r           <= DMA_TGT_L1_IFM;
                     dpram_load_addr_init_r <= 16'd0;
-                    dma_rd_num_trans       <= L1_IFM_WORDS_PER_FI;     // 16,384 word
-                    dma_rd_start_addr      <= addr_l1_ifm_byte;
+                    dma_rd_num_trans       <= cur_pool_ifm_per_fi;
+                    dma_rd_start_addr      <= addr_pool_ifm_byte;
                     dma_rd_start           <= 1'b1;
                     state_r                <= S_L1_FI_LOAD_WAIT;
                 end
@@ -1078,8 +1224,8 @@ module yolo_engine #(
                 end
 
                 S_L1_FI_STORE: begin
-                    dma_wr_num_trans        <= L1_OFM_WORDS_PER_FI;     // 4,096 word
-                    dma_wr_start_addr       <= addr_l1_ofm_byte;
+                    dma_wr_num_trans        <= cur_pool_ofm_per_fi;
+                    dma_wr_start_addr       <= addr_pool_ofm_byte;
                     dpram_store_addr_init_r <= 16'd0;
                     dma_wr_start            <= 1'b1;
                     state_r                 <= S_L1_FI_STORE_WAIT;
@@ -1089,15 +1235,29 @@ module yolo_engine #(
                 end
 
                 S_L1_NEXT_FI: begin
-                    if (fi_r == L1_CO - 5'd1) begin
-                        // L1 완료 → REPACK 진입
-                        layer_idx <= 5'd2;
+                    if (fi_r == {6'd0, cur_pool_co} - 12'd1) begin
+                        // Pool 완료 → 다음 phase 분기
                         rp_row_r  <= 12'd0;
-                        rp_cig_r  <= 3'd0;
+                        rp_cig_r  <= 4'd0;
                         rp_chl_r  <= 3'd0;
-                        state_r   <= S_RP_LOAD;
+                        if (pool_phase_r == 5'd1) begin
+                            // L1 완료 → REPACK to L2
+                            layer_idx    <= 5'd2;
+                            conv_phase_r <= 5'd2;
+                            state_r      <= S_RP_LOAD;
+                        end else if (pool_phase_r == 5'd3) begin
+                            // L3 완료 → REPACK to L4
+                            layer_idx    <= 5'd4;
+                            conv_phase_r <= 5'd4;
+                            state_r      <= S_RP_LOAD;
+                        end else begin
+                            // L5 완료 → 최종 종료
+                            layer_idx      <= 5'd6;
+                            network_done_r <= 1'b1;
+                            state_r        <= S_DONE;
+                        end
                     end else begin
-                        fi_r    <= fi_r + 5'd1;
+                        fi_r    <= fi_r + 12'd1;
                         state_r <= S_L1_FI_LOAD;
                     end
                 end
@@ -1109,8 +1269,11 @@ module yolo_engine #(
                 //------------------------------------------------
                 S_RP_LOAD: begin
                     dma_target_r           <= DMA_TGT_L1_IFM;
-                    dpram_load_addr_init_r <= ({11'd0, rp_chl_r[1:0]} << 5);   // ch_l*32
-                    dma_rd_num_trans       <= REPACK_LOAD_WORDS_PER_BURST;
+                    // ch_l × W_BLK in scratch_a (L1→L2: ch_l*32, L3→L4: ch_l*16)
+                    dpram_load_addr_init_r <= is_conv_l4 ?
+                                              ({12'd0, rp_chl_r[1:0]} << 4) :
+                                              ({11'd0, rp_chl_r[1:0]} << 5);
+                    dma_rd_num_trans       <= cur_rp_load_words;
                     dma_rd_start_addr      <= addr_rp_load_byte;
                     dma_rd_start           <= 1'b1;
                     state_r                <= S_RP_LOAD_WAIT;
@@ -1129,12 +1292,11 @@ module yolo_engine #(
                 end
 
                 S_RP_GEN: begin
-                    // GEN 카운터 자동 진행. 완료 신호 rp_gen_done_r 를 대기.
                     if (rp_gen_done_r) state_r <= S_RP_STORE;
                 end
 
                 S_RP_STORE: begin
-                    dma_wr_num_trans        <= REPACK_STORE_WORDS_PER_CIG;   // 128 word
+                    dma_wr_num_trans        <= cur_rp_store_words;
                     dma_wr_start_addr       <= addr_rp_store_byte;
                     dpram_store_addr_init_r <= SCRATCH_B_BASE;
                     dma_wr_start            <= 1'b1;
@@ -1145,20 +1307,19 @@ module yolo_engine #(
                 end
 
                 S_RP_NEXT_CIG: begin
-                    if (rp_cig_r == 3'd3) begin
-                        rp_cig_r <= 3'd0;
-                        if (rp_row_r == 12'd127) begin
-                            // REPACK 완료 → L2 진입 (streaming: bias 부터)
-                            conv_phase_r <= 5'd2;
-                            rb_r         <= 12'd0;
-                            fi_r         <= 5'd0;
-                            state_r      <= S_LOAD_BIAS;
+                    if (rp_cig_r[2:0] == cur_rp_total_cig_minus1) begin
+                        rp_cig_r <= 4'd0;
+                        if (rp_row_r == cur_rp_total_rows - 12'd1) begin
+                            // REPACK 완료 → 다음 conv 진입 (streaming: bias 부터)
+                            rb_r    <= 12'd0;
+                            fi_r    <= 12'd0;
+                            state_r <= S_LOAD_BIAS;
                         end else begin
                             rp_row_r <= rp_row_r + 12'd1;
                             state_r  <= S_RP_LOAD;
                         end
                     end else begin
-                        rp_cig_r <= rp_cig_r + 3'd1;
+                        rp_cig_r <= rp_cig_r + 4'd1;
                         state_r  <= S_RP_LOAD;
                     end
                 end
