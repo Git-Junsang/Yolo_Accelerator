@@ -1,48 +1,39 @@
 `timescale 1ns / 1ps
-//----------------------------------------------------------------+
-// yolo_engine.v — Clean rewrite v1 (L0 / L1 / L2 only)
-//
-// 설계 원칙:
-//   1. rb_stream uniform across all conv layers
-//      - conv_top 은 항상 i_ofm_h_half=1, i_row_start=rb 로 호출.
-//      - 각 rb 마다 IFM 2-3 row DMA → conv 1회 → OFM Co개 row DMA.
-//   2. Pool chunk-based (prev OFM > dpram 한도)
-//      - L1: L0 OFM = 262144 word > 65536 → 4 chunks.
-//      - 한 chunk = 한 filter group (4 fil × 16384 word) → 안전 분할.
-//   3. 서브모듈 인터페이스 전부 유지
-//      - conv_top, max_pool_unit, ifm_line_buf, gbuff_param
-//      - axi_dma_rd, axi_dma_wr, dpram_wrapper
-//   4. AXI slave register map 유지
-//      - ctrl_reg0[0] = ap_start
-//      - ctrl_reg1    = dram_wgt_base
-//      - ctrl_reg2    = dram_ifm_base (L0 input)
-//      - ctrl_reg3    = dram_ofm_base
-//   5. v1 미지원: conv1×1, s1_pool, upsample, route, stream_wgt
-//
-// 지원 layer (v1):
-//   L0 : conv 3×3 — Ci=3, Co=16, 256×256×3 → 256×256×16
-//   L1 : maxpool stride-2 — 256×256×16 → 128×128×16
-//   L2 : conv 3×3 — Ci=16, Co=32, 128×128×16 → 128×128×32
-//
-// DRAM layout (software 약속):
-//   dram_wgt_base + 0           : weights (L0=27 entry × 16B, L2=144 entry × 16B)
-//   dram_wgt_base + 0x00A00000  : bias 영역 (각 layer Co 만큼)
-//   dram_ifm_base               : L0 input 이미지 (256×256×4ch padded, NCHW packed)
-//   dram_ofm_base + 0           : L0 OFM (16 × 128 × 128 packed word = 262144 word)
-//   dram_ofm_base + 0x00100000  : L1 OFM (16 ×  64 ×  64           =  65536 word)
-//   dram_ofm_base + 0x00140000  : L2 OFM (32 ×  64 ×  64           = 131072 word)
-//
-// Top FSM (15 states):
-//   IDLE  → INIT → (conv) LOAD_WGT → LOAD_WGT_WAIT → LOAD_BIAS → LOAD_BIAS_WAIT
-//                 → RB_DMA_IFM → RB_DMA_IFM_WAIT → CONV_START → CONV_WAIT
-//                 → RB_DMA_OFM → RB_DMA_OFM_WAIT → RB_NEXT
-//                                             (loop until last rb) → LAYER_NEXT
-//         → (pool) POOL_DMA_IFM → POOL_DMA_IFM_WAIT
-//                 → POOL_RUN → POOL_DMA_OFM → POOL_DMA_OFM_WAIT
-//                 → POOL_NEXT (loop chunks) → LAYER_NEXT
-//         → DONE
-//----------------------------------------------------------------+
 `include "user_define_h.v"
+//----------------------------------------------------------------+
+// yolo_engine.v — Clean rewrite v2 (L0 only)
+//
+// 설계 핵심: conv_top 을 (rb, fi) 단위로 1번씩 호출.
+//   - co_total=1, h_half=1, row_start=rb, wgt_base=fi, bias_base=fi
+//   - 각 호출 = 128 출력 pixel (한 filter 한 row)
+//   - conv_top 내부의 filter 전이 (ST_NEXT) 우회 — 항상 첫 fil
+//
+// 그 외 설계:
+//   - L0 only (layer 표 없음, hardcoded)
+//   - 단일 main FSM, 모든 FSM reg 는 한 always 안에서만 갱신
+//   - DMA write 카운터는 별도 always (asm_full 기반)
+//   - 서브모듈은 검증된 그대로 사용
+//
+// L0 사양:
+//   conv 3×3, Ci=3, Co=16, H=W=256
+//   acc_len=1, shift=8, ci_groups=1
+//   weight DMA = 16 fi × 16 word/entry = 256 word
+//   bias DMA = 16 word (32-bit sign-extended bias)
+//   IFM rb=0: 3 row × 256 word = 768 word
+//   IFM rb≥1: 2 row × 256 word = 512 word
+//   OFM per (rb, fi) = 128 word
+//
+// DRAM 주소:
+//   wgt_base + 0           = weight (256 word)
+//   wgt_base + 0x00A00000  = bias (16 word)
+//   ifm_base               = L0 input (NHWC 4ch padded, 16-byte entry)
+//   ofm_base               = L0 output (16 fi × 128 × 128 packed word)
+//
+// IFM line buffer 매핑 (cyclic):
+//   IFM row r → bank r%4 의 addr 0..63
+//   rb=0: load rows {0,1,2} → banks {0,1,2}. Bank 3 = row -1 padding.
+//   rb≥1: load rows {2*rb+1, 2*rb+2} → banks {(2*rb+1)%4, (2*rb+2)%4}.
+//----------------------------------------------------------------+
 
 module yolo_engine #(
     parameter integer C_S_AXI_DATA_WIDTH = 32,
@@ -54,7 +45,7 @@ module yolo_engine #(
     input  wire                              clk,
     input  wire                              rstn,
 
-    // ===== AXI4-Lite slave (control) =====
+    // AXI4-Lite slave
     input  wire [C_S_AXI_ADDR_WIDTH-1:0]     S_AXI_AWADDR,
     input  wire [2:0]                        S_AXI_AWPROT,
     input  wire                              S_AXI_AWVALID,
@@ -75,7 +66,7 @@ module yolo_engine #(
     output wire                              S_AXI_RVALID,
     input  wire                              S_AXI_RREADY,
 
-    // ===== AXI4 master (data path to DRAM) =====
+    // AXI4 master
     output wire                              M_ARVALID,
     input  wire                              M_ARREADY,
     output wire [AXI_M_WIDTH_AD-1:0]         M_ARADDR,
@@ -121,14 +112,138 @@ module yolo_engine #(
     input  wire [1:0]                        M_BRESP,
     input  wire [AXI_M_WIDTH_ID-1:0]         M_BID,
     input  wire                              M_BUSER,
-
     output wire                              o_network_done,
     output wire                              network_done_led
 );
 
-    //================================================================
-    // AXI Slave (control)
-    //================================================================
+    //----------------------------------------------------------------
+    // L0 constants
+    //----------------------------------------------------------------
+    localparam [11:0] L0_W        = 12'd256;
+    localparam [11:0] L0_H        = 12'd256;
+    localparam [11:0] L0_W_HALF   = 12'd128;
+    localparam [11:0] L0_H_HALF   = 12'd128;
+    localparam [11:0] L0_W_BLOCKS = 12'd64;
+    localparam [11:0] L0_CO       = 12'd16;
+    localparam [7:0]  L0_ACC_LEN  = 8'd1;
+    localparam [4:0]  L0_SHIFT    = 5'd8;
+    localparam [7:0]  L0_CI_GRPS  = 8'd1;
+
+    localparam [19:0] WGT_DMA_WORDS   = 20'd256;   // 16 fi × 16 word/entry
+    localparam [19:0] BIAS_DMA_WORDS  = 20'd16;
+    localparam [19:0] IFM_INIT_WORDS  = 20'd768;   // rb=0: 3 rows × 256
+    localparam [19:0] IFM_NEXT_WORDS  = 20'd512;   // rb>=1: 2 rows × 256
+    localparam [19:0] OFM_FIL_WORDS   = 20'd128;   // 1 fi × 1 rb = W_half words
+
+    //----------------------------------------------------------------
+    // L1 constants (POOL_S2, 16ch × 256 → 128, max pool stride 2)
+    //
+    //   L0 OFM (= L1 IFM) per filter in DRAM:
+    //     16,384 word (= 65,536 byte = 128 × 128 × 4 (2×2 packed))
+    //   L1 OFM per filter in DRAM:
+    //     4,096 word (= 16,384 byte = 128 × 32 (4 horiz packed))
+    //
+    //   Processing strategy: 한 filter 씩
+    //     1) L0 OFM[fi] → OFM dpram[0..16383] (DMA read, 32-bit 직접 적재)
+    //     2) max_pool_unit (i_total_in_words = 16,384) — in-place pool
+    //        결과: dpram[0..4095]
+    //     3) dpram[0..4095] → L1 OFM[fi] (DMA write)
+    //
+    //   L1 OFM DRAM word offset = 262,144 (= L0 전체 OFM word 수)
+    //   per-fi byte stride = 4,096 word × 4 = 16,384 byte = 0x4000
+    //----------------------------------------------------------------
+    localparam [4:0]  L1_CO              = 5'd16;
+    localparam [19:0] L1_IFM_WORDS_PER_FI = 20'd16384;
+    localparam [19:0] L1_OFM_WORDS_PER_FI = 20'd4096;
+    localparam [31:0] L1_OFM_BYTE_BASE    = 32'd1048576;     // 262,144 × 4 byte
+    localparam [31:0] L0_OFM_FI_BYTE      = 32'd65536;       // L0 OFM per-fi byte stride
+    localparam [31:0] L1_OFM_FI_BYTE      = 32'd16384;       // L1 OFM per-fi byte stride
+
+    //----------------------------------------------------------------
+    // REPACK / L2 IFM constants
+    //
+    //   L1 OFM (channel-major byte stream) → L2 IFM (NHWC packed)
+    //   - L1 OFM per (fi, r, cb_quad) word = 4 horizontal pool pixels of same channel
+    //     fi*16384 + r*128 + cb_quad (word) — total 16 × 16,384 word
+    //   - L2 IFM 1 entry = 16 byte = 4 col × 4 ch (col-outer, ch-inner)
+    //     order per row: ci_g 0..3 outer, col_b 0..31 inner  → 128 entries/row
+    //     row-major across 128 rows
+    //
+    //   REPACK 동작 (per row 1차원 loop, 내부 ci_g loop):
+    //     [Phase A]  ci_g 별로 4 channel 의 1 row (= 128 byte = 32 word) 을
+    //                DMA-read 하여 OFM dpram scratch_a[ch_l*32 + col_b] 에 적재
+    //                (4 burst × 32 word per ci_g)
+    //     [Phase B]  scratch_a[ch_l*32 + col_b] 4 word 을 읽어 transpose,
+    //                4 packed output word 을 scratch_b[col_b*4 + col_l] 에 기록
+    //                (per col_b: 4 cycle read + 4 cycle write — total 256 cycle/ci_g)
+    //     [Phase C]  scratch_b[0..127] 을 DMA-write 로 L2 IFM 영역에 dump
+    //                (128 word per ci_g — 4 ci_g × 128 = 512 word per row)
+    //
+    //   DRAM 주소:
+    //     L2 IFM byte base = dram_ofm_base + 0x140000 (= L1 OFM end)
+    //     per (r, ci_g, col_b) entry byte = base + r*2048 + ci_g*32*16 + col_b*16
+    //                                     = base + r*2048 + ci_g*512   + col_b*16
+    //----------------------------------------------------------------
+    localparam [31:0] L2_IFM_BYTE_BASE       = 32'h00140000;   // L1 OFM end
+    localparam [31:0] L1_OFM_ROW_BYTE        = 32'd128;        // 32 word × 4 byte (per ch per row)
+    localparam [31:0] L2_IFM_ROW_BYTE        = 32'd2048;       // 128 entry × 16 byte
+    localparam [31:0] L2_IFM_CIG_BYTE_PER_R  = 32'd512;        // 32 entry × 16 byte
+    localparam [19:0] REPACK_LOAD_WORDS_PER_BURST = 20'd32;    // 1 ch × 1 row = 32 word
+    localparam [19:0] REPACK_STORE_WORDS_PER_CIG  = 20'd128;   // 32 entry × 4 word/entry
+
+    // scratch dpram region (OFM dpram, shared time-multiplexed):
+    //   scratch_a base addr (32-bit word):   0   (capacity 128 word)
+    //   scratch_b base addr (32-bit word): 128   (capacity 128 word)
+    localparam [15:0] SCRATCH_A_BASE = 16'd0;
+    localparam [15:0] SCRATCH_B_BASE = 16'd128;
+
+    //----------------------------------------------------------------
+    // L2 constants  (CONV3x3, Ci=16, Co=32, 128×128 → 128×128)
+    //----------------------------------------------------------------
+    localparam [11:0] L2_W        = 12'd128;
+    localparam [11:0] L2_H        = 12'd128;
+    localparam [11:0] L2_W_HALF   = 12'd64;
+    localparam [11:0] L2_H_HALF   = 12'd64;
+    localparam [11:0] L2_W_BLOCKS = 12'd32;    // ceil(W/4)
+    localparam [11:0] L2_CO       = 12'd32;
+    localparam [7:0]  L2_ACC_LEN  = 8'd4;      // ci_groups
+    localparam [4:0]  L2_SHIFT    = 5'd6;      // scale = 0x40 = 64 = 2^6
+    localparam [7:0]  L2_CI_GRPS  = 8'd4;
+    // 한 row 의 line_buf 총 entry = W_BLK × ci_groups = 32 × 4 = 128
+    localparam [11:0] L2_EIR_PER_ROW = 12'd128;
+
+    // L2 DMA word counts
+    //   weight: 32 fi × 4 acc_len × 16 word/entry = 2048 word
+    //   bias  : 32 fi
+    //   IFM rb=0: 3 rows × (128 entry × 4 word/entry) = 1536 word
+    //   IFM rb≥1: 2 rows × 512 = 1024 word
+    //   OFM per (rb, fi): W_half = 64 word
+    localparam [19:0] L2_WGT_DMA_WORDS  = 20'd2048;
+    localparam [19:0] L2_BIAS_DMA_WORDS = 20'd32;
+    localparam [19:0] L2_IFM_INIT_WORDS = 20'd1536;
+    localparam [19:0] L2_IFM_NEXT_WORDS = 20'd1024;
+    localparam [19:0] L2_OFM_FIL_WORDS  = 20'd64;
+
+    // L2 weight 시작 위치: gen_sim_dram.py 의 blk_off=16 (L0 는 blk_off=0)
+    //   → byte offset = 16 × 64 = 1024 byte = 256 word
+    localparam [31:0] L2_WGT_BYTE_OFF  = 32'd1024;
+    // L2 bias 시작 위치: L0 의 16 filter 뒤 → byte offset 16 × 4 = 64
+    localparam [31:0] L2_BIAS_BYTE_OFF = 32'd64;
+    // L2 OFM DRAM byte base (offset from dram_ofm_base)
+    localparam [31:0] L2_OFM_BYTE_BASE = 32'h00180000;
+    // L2 wgt entry base
+    //   Weight BRAM 비대칭: write 측 72-bit (4096 depth), read 측 288-bit (1024 depth)
+    //                       read addr K ↔ write addr {K, 2'b00..11}
+    //   L0 wgt = 16 fi × 1 acc_len = 16 READ entry = 64 WRITE entry
+    //   L2 의 READ base = 16, WRITE base = 64
+    localparam [11:0] L2_WGT_WR_ENTRY_BASE = 12'd64;   // DMA write counter init
+    localparam [9:0]  L2_WGT_RD_ENTRY_BASE = 10'd16;   // conv_top i_wgt_base
+    // Bias 는 write/read 같은 단위 (32-bit), L2 base = 16
+    localparam [11:0] L2_BIAS_ENTRY_BASE = 12'd16;
+
+    //----------------------------------------------------------------
+    // AXI slave (control reg)
+    //----------------------------------------------------------------
     wire [31:0] ctrl_reg0, ctrl_reg1, ctrl_reg2, ctrl_reg3;
     reg         network_done_r;
     assign o_network_done = network_done_r;
@@ -154,172 +269,107 @@ module yolo_engine #(
         .S_AXI_RVALID(S_AXI_RVALID), .S_AXI_RREADY(S_AXI_RREADY)
     );
 
-    wire        ap_start       = ctrl_reg0[0];
-    wire [31:0] dram_wgt_base  = ctrl_reg1;
-    wire [31:0] dram_ifm_base  = ctrl_reg2;
-    wire [31:0] dram_ofm_base  = ctrl_reg3;
+    wire        ap_start      = ctrl_reg0[0];
+    wire [31:0] dram_wgt_base = ctrl_reg1;
+    wire [31:0] dram_ifm_base = ctrl_reg2;
+    wire [31:0] dram_ofm_base = ctrl_reg3;
 
-    //================================================================
-    // Per-layer parameter table (v1: L0/L1/L2 only)
-    //
-    //   각 layer 의 OFM 크기, weight/bias DRAM offset, ci_groups 등.
-    //   v2 에서 L3~L10 까지 확장 예정.
-    //================================================================
-    reg  [4:0]  layer_idx;             // 현재 layer
+    //----------------------------------------------------------------
+    // Layer counters
+    //   0 = L0 active, 1 = L0 done / L1 active, 2 = L1 done / REPACK / L2 active,
+    //   3 = L2 done (network end)
+    //----------------------------------------------------------------
+    reg [4:0] layer_idx;
 
-    // 조합 — layer_idx 로부터 layer 속성 도출
-    reg         lyr_is_conv;           // conv layer flag
-    reg         lyr_is_pool;           // maxpool stride-2 flag
-    reg  [11:0] lyr_ofm_w;             // OFM W (conv: 결과, pool: 입력 의 1/2)
-    reg  [11:0] lyr_ofm_h;             // OFM H
-    reg  [11:0] lyr_co;                // OFM Co (= conv 출력 채널 수 또는 pool 입력 채널 수)
-    reg  [11:0] lyr_ci;                // IFM Ci (conv 전용)
-    reg  [7:0]  lyr_acc_len;           // conv 누적 cycle 수 = ceil(Ci/4)
-    reg  [4:0]  lyr_shift;             // descaling shift
-    reg  [7:0]  lyr_ci_groups;         // ifm_line_buf 의 ci_groups (= ceil(Ci/4))
-
-    // DRAM offset (word 단위)
-    reg  [21:0] lyr_wgt_dram_words;    // 누적 weight word offset
-    reg  [11:0] lyr_bias_dram_words;   // 누적 bias word offset
-    reg  [21:0] lyr_ifm_offset_w;      // IFM 시작 (OFM 영역 기준 word)
-    reg  [21:0] lyr_ofm_offset_w;      // OFM 시작 (OFM 영역 기준 word)
-    reg         lyr_use_input;         // 1 이면 dram_ifm_base 사용 (L0 만)
-
-    always @(*) begin
-        // 기본값
-        lyr_is_conv         = 1'b0;
-        lyr_is_pool         = 1'b0;
-        lyr_ofm_w           = 12'd0;
-        lyr_ofm_h           = 12'd0;
-        lyr_co              = 12'd0;
-        lyr_ci              = 12'd0;
-        lyr_acc_len         = 8'd1;
-        lyr_shift           = 5'd13;
-        lyr_ci_groups       = 8'd1;
-        lyr_wgt_dram_words  = 22'd0;
-        lyr_bias_dram_words = 12'd0;
-        lyr_ifm_offset_w    = 22'd0;
-        lyr_ofm_offset_w    = 22'd0;
-        lyr_use_input       = 1'b0;
-
-        case (layer_idx)
-            // L0: conv 3×3, Ci=3, Co=16, 256×256×3 → 256×256×16
-            //   weight word count = 16 entry × Co (16) × 16 word/entry / 16 ent × ...
-            //   실제: 1 filter = acc_len(1) × 16 words = 16 words
-            //         total weight = Co × acc_len × 16 = 16 × 1 × 16 = 256 words
-            //   bias  = Co × 1 word = 16 words
-            5'd0: begin
-                lyr_is_conv         = 1'b1;
-                lyr_ofm_w           = 12'd256;
-                lyr_ofm_h           = 12'd256;
-                lyr_co              = 12'd16;
-                lyr_ci              = 12'd3;
-                lyr_acc_len         = 8'd1;
-                lyr_shift           = 5'd8;
-                lyr_ci_groups       = 8'd1;
-                lyr_wgt_dram_words  = 22'd0;
-                lyr_bias_dram_words = 12'd0;
-                lyr_use_input       = 1'b1;
-                lyr_ofm_offset_w    = 22'd0;             // L0 OFM @ ofm_base + 0
-            end
-
-            // L1: maxpool stride-2, in 256×256×16 → 128×128×16
-            //   lyr_ofm_w/h = pool 출력 크기 (128)
-            //   lyr_co      = filter 수 (= 16)
-            //   lyr_ifm_offset_w = L0 OFM 위치 (= 0)
-            //   lyr_ofm_offset_w = L1 OFM 위치
-            5'd1: begin
-                lyr_is_pool         = 1'b1;
-                lyr_ofm_w           = 12'd128;
-                lyr_ofm_h           = 12'd128;
-                lyr_co              = 12'd16;
-                lyr_ifm_offset_w    = 22'd0;             // L0 OFM start
-                lyr_ofm_offset_w    = 22'd262144;        // L1 OFM @ word 262144
-            end
-
-            // L2: conv 3×3, Ci=16, Co=32, 128×128×16 → 128×128×32
-            //   weight word = Co × acc_len × 16 = 32 × 4 × 16 = 2048 words
-            //     ※ L0 weight 256 word + L1 (no weight) → L2 base = 256 words.
-            //   bias  = Co × 1 = 32 words. L0 bias 16 + L1 (none) → L2 base = 16 words.
-            5'd2: begin
-                lyr_is_conv         = 1'b1;
-                lyr_ofm_w           = 12'd128;
-                lyr_ofm_h           = 12'd128;
-                lyr_co              = 12'd32;
-                lyr_ci              = 12'd16;
-                lyr_acc_len         = 8'd4;
-                lyr_shift           = 5'd6;
-                lyr_ci_groups       = 8'd4;
-                lyr_wgt_dram_words  = 22'd256;           // L0 (16×1×16=256) 다음
-                lyr_bias_dram_words = 12'd16;            // L0 bias (16) 다음
-                lyr_ifm_offset_w    = 22'd262144;        // L1 OFM @ 262144
-                lyr_ofm_offset_w    = 22'd327680;        // L2 OFM @ 262144 + 65536
-            end
-
-            default: ;
-        endcase
-    end
-
-    // 파생값
-    wire [11:0] lyr_ofm_w_half = {1'b0, lyr_ofm_w[11:1]};   // W/2
-    wire [11:0] lyr_ofm_h_half = {1'b0, lyr_ofm_h[11:1]};   // H/2
-    wire [11:0] lyr_w_blocks   = (lyr_ofm_w + 12'd3) >> 2;  // ceil(W/4)
-    wire [11:0] lyr_h_blocks   = (lyr_ofm_h + 12'd3) >> 2;  // ceil(H/4) — unused
-    /* verilator lint_off UNUSED */
-    wire _unused_hb = |lyr_h_blocks;
-    /* verilator lint_on UNUSED */
-
-    // 한 IFM row 당 BRAM entry 수 (= w_blocks × ci_groups)
-    wire [15:0] entries_per_row = {4'd0, lyr_w_blocks} * {8'd0, lyr_ci_groups};
-
-    // DRAM byte address 계산
-    wire [31:0] addr_wgt  = dram_wgt_base + ({10'd0, lyr_wgt_dram_words} << 2);
-    wire [31:0] addr_bias = dram_wgt_base + 32'h00A00000 + ({20'd0, lyr_bias_dram_words} << 2);
-    wire [31:0] addr_ifm  = lyr_use_input ? dram_ifm_base
-                                          : (dram_ofm_base + ({10'd0, lyr_ifm_offset_w} << 2));
-    wire [31:0] addr_ofm  = dram_ofm_base + ({10'd0, lyr_ofm_offset_w} << 2);
-
-    //================================================================
+    //----------------------------------------------------------------
     // FSM 상태
-    //================================================================
-    localparam ST_IDLE             = 5'd0,
-               ST_INIT             = 5'd1,
-               ST_LOAD_WGT         = 5'd2,
-               ST_LOAD_WGT_WAIT    = 5'd3,
-               ST_LOAD_BIAS        = 5'd4,
-               ST_LOAD_BIAS_WAIT   = 5'd5,
-               ST_RB_DMA_IFM       = 5'd6,
-               ST_RB_DMA_IFM_WAIT  = 5'd7,
-               ST_CONV_START       = 5'd8,
-               ST_CONV_WAIT        = 5'd9,
-               ST_RB_DMA_OFM       = 5'd10,
-               ST_RB_DMA_OFM_WAIT  = 5'd11,
-               ST_RB_NEXT          = 5'd12,
-               ST_POOL_DMA_IFM     = 5'd13,
-               ST_POOL_DMA_IFM_WAIT= 5'd14,
-               ST_POOL_RUN         = 5'd15,
-               ST_POOL_WAIT        = 5'd16,
-               ST_POOL_DMA_OFM     = 5'd17,
-               ST_POOL_DMA_OFM_WAIT= 5'd18,
-               ST_POOL_NEXT        = 5'd19,
-               ST_LAYER_NEXT       = 5'd20,
-               ST_DONE             = 5'd21;
-    reg [4:0] top_state;
+    //   0..11   : conv FSM 공통 (L0, L2 시간 공유 — conv_phase_r 로 구별)
+    //   12      : S_CONV_DONE (다음 phase 분기)
+    //   13..19  : L1 (POOL_S2) FSM
+    //   20..27  : REPACK FSM
+    //   28      : S_DONE (network end)
+    //----------------------------------------------------------------
+    localparam S_IDLE              = 5'd0,
+               S_LOAD_WGT          = 5'd1,
+               S_LOAD_WGT_WAIT     = 5'd2,
+               S_LOAD_BIAS         = 5'd3,
+               S_LOAD_BIAS_WAIT    = 5'd4,
+               S_RB_DMA_IFM        = 5'd5,
+               S_RB_DMA_IFM_WAIT   = 5'd6,
+               S_FIL_CONV_START    = 5'd7,
+               S_FIL_CONV_WAIT     = 5'd8,
+               S_FIL_DMA_STORE     = 5'd9,
+               S_FIL_DMA_STORE_WAIT= 5'd10,
+               S_RB_NEXT           = 5'd11,
+               S_CONV_DONE         = 5'd12,
+               S_L1_FI_LOAD        = 5'd13,
+               S_L1_FI_LOAD_WAIT   = 5'd14,
+               S_L1_FI_POOL        = 5'd15,
+               S_L1_FI_POOL_WAIT   = 5'd16,
+               S_L1_FI_STORE       = 5'd17,
+               S_L1_FI_STORE_WAIT  = 5'd18,
+               S_L1_NEXT_FI        = 5'd19,
+               S_RP_LOAD           = 5'd20,    // REPACK: DMA-read 1 ch row
+               S_RP_LOAD_WAIT      = 5'd21,
+               S_RP_GEN            = 5'd22,    // transpose generate
+               S_RP_STORE          = 5'd23,    // DMA-write scratch_b
+               S_RP_STORE_WAIT     = 5'd24,
+               S_RP_NEXT_CIG       = 5'd25,    // ci_g++ or row++
+               S_DONE              = 5'd28;
 
-    // DMA target enum (read 경로 분기)
-    localparam DMA_TGT_NONE  = 2'd0,
-               DMA_TGT_WGT   = 2'd1,
-               DMA_TGT_BIAS  = 2'd2,
-               DMA_TGT_IFM   = 2'd3;
-    reg [1:0]  dma_target_r;
+    reg [4:0]  state_r;
+    reg [11:0] rb_r;       // 0..127 (L0) / 0..63 (L2)
+    reg [4:0]  fi_r;       // 0..31 (L2 max) / 0..15 (L0, L1)
 
-    // Pool 경로: DRAM → dpram 직접 적재용 별도 플래그
-    reg        pool_dma_load_r;       // 1=현재 DMA read 는 pool input dpram 로딩
-    reg        pool_dma_store_r;      // 1=현재 DMA write 는 pool output
+    //----------------------------------------------------------------
+    // conv_phase_r — 현재 conv FSM 이 누구를 처리하는지 (L0 / L2)
+    //   0 = L0, 2 = L2 — 그 외 값은 conv FSM 진입 안 함
+    //----------------------------------------------------------------
+    reg [4:0] conv_phase_r;
+    wire is_conv_l0 = (conv_phase_r == 5'd0);
+    wire is_conv_l2 = (conv_phase_r == 5'd2);
 
-    //================================================================
-    // DMA Read 인스턴스
-    //================================================================
+    //----------------------------------------------------------------
+    // conv 파라미터 mux (현재 conv 레이어 기준)
+    //----------------------------------------------------------------
+    wire [11:0] cur_w_blocks   = is_conv_l2 ? L2_W_BLOCKS : L0_W_BLOCKS;
+    wire [11:0] cur_w          = is_conv_l2 ? L2_W        : L0_W;
+    wire [11:0] cur_h          = is_conv_l2 ? L2_H        : L0_H;
+    wire [11:0] cur_w_half     = is_conv_l2 ? L2_W_HALF   : L0_W_HALF;
+    wire [11:0] cur_h_half     = is_conv_l2 ? L2_H_HALF   : L0_H_HALF;
+    wire [11:0] cur_co         = is_conv_l2 ? L2_CO       : L0_CO;
+    wire [7:0]  cur_acc_len    = is_conv_l2 ? L2_ACC_LEN  : L0_ACC_LEN;
+    wire [4:0]  cur_shift      = is_conv_l2 ? L2_SHIFT    : L0_SHIFT;
+    wire [7:0]  cur_ci_grps    = is_conv_l2 ? L2_CI_GRPS  : L0_CI_GRPS;
+    wire [11:0] cur_eir_per_row= is_conv_l2 ? L2_EIR_PER_ROW : L0_W_BLOCKS;
+
+    wire [19:0] cur_wgt_dma    = is_conv_l2 ? L2_WGT_DMA_WORDS  : WGT_DMA_WORDS;
+    wire [19:0] cur_bias_dma   = is_conv_l2 ? L2_BIAS_DMA_WORDS : BIAS_DMA_WORDS;
+    wire [19:0] cur_ifm_init   = is_conv_l2 ? L2_IFM_INIT_WORDS : IFM_INIT_WORDS;
+    wire [19:0] cur_ifm_next   = is_conv_l2 ? L2_IFM_NEXT_WORDS : IFM_NEXT_WORDS;
+    wire [19:0] cur_ofm_fil    = is_conv_l2 ? L2_OFM_FIL_WORDS  : OFM_FIL_WORDS;
+
+    // BRAM weight/bias entry base
+    //   wgt 는 write/read 단위가 다르므로 분리:
+    //     cur_wgt_wr_entry_base = DMA write 카운터 init  (72-bit entry, max 4096)
+    //     cur_wgt_rd_entry_base = conv_top i_wgt_base    (288-bit entry, max 1024)
+    wire [11:0] cur_wgt_wr_entry_base = is_conv_l2 ? L2_WGT_WR_ENTRY_BASE : 12'd0;
+    wire [9:0]  cur_wgt_rd_entry_base = is_conv_l2 ? L2_WGT_RD_ENTRY_BASE : 10'd0;
+    wire [11:0] cur_bias_entry_base   = is_conv_l2 ? L2_BIAS_ENTRY_BASE   : 12'd0;
+
+    //----------------------------------------------------------------
+    // DMA target enum (for asm/counter decoding)
+    //----------------------------------------------------------------
+    localparam DMA_TGT_NONE   = 3'd0,
+               DMA_TGT_WGT    = 3'd1,
+               DMA_TGT_BIAS   = 3'd2,
+               DMA_TGT_IFM    = 3'd3,
+               DMA_TGT_L1_IFM = 3'd4;   // 32-bit 직접 OFM dpram 적재
+    reg [2:0]  dma_target_r;
+
+    //----------------------------------------------------------------
+    // DMA controllers (axi_dma_rd / axi_dma_wr)
+    //----------------------------------------------------------------
     reg         dma_rd_start;
     reg  [19:0] dma_rd_num_trans;
     reg  [31:0] dma_rd_start_addr;
@@ -327,9 +377,6 @@ module yolo_engine #(
     wire        dma_rd_data_vld;
     wire [19:0] dma_rd_data_cnt;
     wire        dma_rd_done;
-    /* verilator lint_off UNUSED */
-    wire _unused_cnt = |dma_rd_data_cnt;
-    /* verilator lint_on UNUSED */
 
     axi_dma_rd #(
         .BITS_TRANS(20),
@@ -349,9 +396,6 @@ module yolo_engine #(
         .clk(clk), .rstn(rstn)
     );
 
-    //================================================================
-    // DMA Write 인스턴스
-    //================================================================
     reg         dma_wr_start;
     reg  [19:0] dma_wr_num_trans;
     reg  [31:0] dma_wr_start_addr;
@@ -359,9 +403,6 @@ module yolo_engine #(
     wire        dma_wr_indata_req;
     wire        dma_wr_done;
     wire        dma_wr_fail;
-    /* verilator lint_off UNUSED */
-    wire _unused_fail = dma_wr_fail;
-    /* verilator lint_on UNUSED */
 
     axi_dma_wr #(
         .BITS_TRANS(20), .OUT_BITS_TRANS(20),
@@ -384,14 +425,19 @@ module yolo_engine #(
         .clk(clk), .rstn(rstn)
     );
 
-    //================================================================
-    // 4-word assembler (32-bit AXI → 128-bit entry)
-    //   Weight / IFM 은 16-byte entry 단위. Bias 는 32-bit 직접.
-    //================================================================
+    /* verilator lint_off UNUSED */
+    wire _unused = |dma_rd_data_cnt | dma_wr_fail;
+    /* verilator lint_on UNUSED */
+
+    //----------------------------------------------------------------
+    // 4-word assembler (32-bit AXI beat → 128-bit entry, for IFM/WGT)
+    //----------------------------------------------------------------
     reg  [1:0]   asm_cnt;
     reg  [31:0]  asm_w0, asm_w1, asm_w2;
     reg          asm_full;
     reg  [127:0] asm_data;
+
+    wire asm_active = (dma_target_r == DMA_TGT_WGT) || (dma_target_r == DMA_TGT_IFM);
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
@@ -403,7 +449,7 @@ module yolo_engine #(
             asm_full <= 1'b0;
             if (dma_rd_start) begin
                 asm_cnt <= 2'd0;
-            end else if (dma_rd_data_vld && (dma_target_r != DMA_TGT_BIAS) && !pool_dma_load_r) begin
+            end else if (dma_rd_data_vld && asm_active) begin
                 case (asm_cnt)
                     2'd0: asm_w0 <= dma_rd_data;
                     2'd1: asm_w1 <= dma_rd_data;
@@ -418,20 +464,26 @@ module yolo_engine #(
         end
     end
 
-    //================================================================
-    // 가중치 / Bias / IFM 적재 주소 카운터
+    //----------------------------------------------------------------
+    // Weight/Bias/IFM write counters
     //
-    //   ※ dma_ifm_row_start_r 는 main FSM 이 ST_RB_DMA_IFM 진입 시 셋업.
-    //     이 always 는 dma_rd_start && IFM target 일 때 그 값을 초기 dma_ifm_row_r 로
-    //     사용하고, 이후 asm_full 마다 entries_per_row 단위로 증가.
-    //================================================================
-    reg  [11:0] wgt_entry_addr_r;
-    reg  [11:0] bias_entry_addr_r;
+    //   Weight: incremented per asm_full when DMA_TGT_WGT.
+    //   Bias  : incremented per dma_rd_data_vld when DMA_TGT_BIAS (32-bit direct).
+    //   IFM   : incremented per asm_full when DMA_TGT_IFM.
+    //           dma_ifm_eir_r wraps at L0_W_BLOCKS (=64),
+    //           dma_ifm_row_r increments at wrap. Bank = row mod 4.
+    //
+    //   ifm_first_row 는 main FSM 이 S_RB_DMA_IFM 진입 시 결정. 그 값으로
+    //   여기서 dma_ifm_row_r 을 초기화. 단일 always-block 내에서 한 reg
+    //   = 단일 writer.
+    //----------------------------------------------------------------
+    reg [11:0] wgt_entry_addr_r;
+    reg [11:0] bias_entry_addr_r;
+    reg [11:0] dma_ifm_row_r;
+    reg [11:0] dma_ifm_eir_r;
 
-    // IFM 적재: rb_stream 모드 → row r → bank r%4 의 addr 0..entries_per_row-1
-    reg  [11:0] dma_ifm_row_r;
-    reg  [11:0] dma_ifm_eir_r;
-    reg  [11:0] dma_ifm_row_start_r;     // main FSM 이 세팅
+    // main FSM 이 S_RB_DMA_IFM cycle 에 셋업
+    reg [11:0] dma_ifm_row_start_r;
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
@@ -440,10 +492,11 @@ module yolo_engine #(
             dma_ifm_row_r     <= 12'd0;
             dma_ifm_eir_r     <= 12'd0;
         end else begin
+            // DMA 시작 시 카운터 리셋 (또는 IFM 의 경우 row start 설정)
             if (dma_rd_start) begin
                 case (dma_target_r)
-                    DMA_TGT_WGT:  wgt_entry_addr_r  <= 12'd0;
-                    DMA_TGT_BIAS: bias_entry_addr_r <= 12'd0;
+                    DMA_TGT_WGT:  wgt_entry_addr_r  <= cur_wgt_wr_entry_base;
+                    DMA_TGT_BIAS: bias_entry_addr_r <= cur_bias_entry_base;
                     DMA_TGT_IFM:  begin
                         dma_ifm_row_r <= dma_ifm_row_start_r;
                         dma_ifm_eir_r <= 12'd0;
@@ -456,7 +509,7 @@ module yolo_engine #(
                 if (dma_rd_data_vld && dma_target_r == DMA_TGT_BIAS)
                     bias_entry_addr_r <= bias_entry_addr_r + 12'd1;
                 if (asm_full && dma_target_r == DMA_TGT_IFM) begin
-                    if (dma_ifm_eir_r == entries_per_row[11:0] - 12'd1) begin
+                    if (dma_ifm_eir_r == cur_eir_per_row - 12'd1) begin
                         dma_ifm_eir_r <= 12'd0;
                         dma_ifm_row_r <= dma_ifm_row_r + 12'd1;
                     end else begin
@@ -467,24 +520,23 @@ module yolo_engine #(
         end
     end
 
-    // gbuff_param 으로 가는 weight write 신호
-    wire        dma_wgt_we   = asm_full && (dma_target_r == DMA_TGT_WGT);
-    wire [11:0] dma_wgt_addr = wgt_entry_addr_r;
-    wire [71:0] dma_wgt_data = asm_data[71:0];   // lower 72b (software 가 16B padded)
+    // Sub-module write signals
+    wire        gbuff_wgt_we   = asm_full && (dma_target_r == DMA_TGT_WGT);
+    wire [11:0] gbuff_wgt_addr = wgt_entry_addr_r;
+    wire [71:0] gbuff_wgt_data = asm_data[71:0];
 
-    wire        dma_bias_we   = dma_rd_data_vld && (dma_target_r == DMA_TGT_BIAS);
-    wire [11:0] dma_bias_addr = bias_entry_addr_r;
-    wire [31:0] dma_bias_data = dma_rd_data;
+    wire        gbuff_bias_we   = dma_rd_data_vld && (dma_target_r == DMA_TGT_BIAS);
+    wire [11:0] gbuff_bias_addr = bias_entry_addr_r;
+    wire [31:0] gbuff_bias_data = dma_rd_data;
 
-    // ifm_line_buf 로 가는 IFM write 신호
-    wire        dma_lb_wr_en   = asm_full && (dma_target_r == DMA_TGT_IFM);
-    wire [1:0]  dma_lb_wr_line = dma_ifm_row_r[1:0];     // bank = row mod 4
-    wire [10:0] dma_lb_wr_addr = dma_ifm_eir_r[10:0];    // addr = eir (rb_stream → 항상 0..epr-1)
-    wire [127:0] dma_lb_wr_data = asm_data;
+    wire         lb_wr_en    = asm_full && (dma_target_r == DMA_TGT_IFM);
+    wire [1:0]   lb_wr_line  = dma_ifm_row_r[1:0];     // bank = row mod 4
+    wire [10:0]  lb_wr_addr  = dma_ifm_eir_r[10:0];
+    wire [127:0] lb_wr_data  = asm_data;
 
-    //================================================================
+    //----------------------------------------------------------------
     // ifm_line_buf
-    //================================================================
+    //----------------------------------------------------------------
     wire         conv_ifm_re;
     wire [11:0]  conv_ifm_row, conv_ifm_col;
     wire [7:0]   conv_ifm_acc;
@@ -496,16 +548,16 @@ module yolo_engine #(
 
     ifm_line_buf u_line_buf (
         .clk(clk), .rstn(rstn),
-        .i_mode(1'b0),                                  // v1: 3x3 만
-        .i_w_blocks(lyr_w_blocks),
-        .i_ci_groups(lyr_ci_groups),
-        .i_w(lyr_ofm_w),
-        .i_h(lyr_ofm_h),
+        .i_mode(1'b0),
+        .i_w_blocks(cur_w_blocks),
+        .i_ci_groups(cur_ci_grps),
+        .i_w(cur_w),
+        .i_h(cur_h),
         .i_line_valid(4'b1111),
-        .i_dma_wr_en(dma_lb_wr_en),
-        .i_dma_wr_line(dma_lb_wr_line),
-        .i_dma_wr_addr(dma_lb_wr_addr),
-        .i_dma_wr_data(dma_lb_wr_data),
+        .i_dma_wr_en(lb_wr_en),
+        .i_dma_wr_line(lb_wr_line),
+        .i_dma_wr_addr(lb_wr_addr),
+        .i_dma_wr_data(lb_wr_data),
         .i_rd_en(conv_ifm_re),
         .i_rb(conv_ifm_row), .i_cb(conv_ifm_col),
         .i_acc_cyc(conv_ifm_acc),
@@ -514,41 +566,57 @@ module yolo_engine #(
         .o_vld(ifm_vld)
     );
 
-    //================================================================
-    // conv_top — 항상 rb_stream 모드 (h_half=1, row_start=rb_r)
-    //================================================================
+    //----------------------------------------------------------------
+    // conv_top — (rb, fi) 단위 호출
+    //
+    //   매 호출:
+    //     i_ofm_h_half = 1 (한 row 만 처리)
+    //     i_co_total   = 1 (한 filter 만)
+    //     i_row_start  = rb_r (현재 rb)
+    //     i_wgt_base   = fi_r (acc_len=1 이므로 fi 가 곧 BRAM read entry)
+    //     i_bias_base  = fi_r
+    //   Output: 128 packed pixel → dpram[0..127]
+    //----------------------------------------------------------------
     reg         conv_start;
     wire        conv_done;
-    wire        conv_fil_done;
+    wire        conv_fil_done;       /* verilator lint_off UNUSED */ /* verilator lint_on UNUSED */
     wire [31:0] conv_pixel;
     wire        conv_pixel_vld;
     wire [25:0] conv_ofm_addr;
-    reg  [11:0] rb_r;                          // 현재 처리 중인 rb
-
     /* verilator lint_off UNUSED */
-    wire _unused_fil_done = conv_fil_done;
+    wire _unused_fil = conv_fil_done;
     /* verilator lint_on UNUSED */
+
+    // conv_top 의 i_wgt_base = layer 별 READ entry base + fi × acc_len  (10-bit)
+    //   L0: acc_len=1 → fi_r * 1 = fi_r,        base=0
+    //   L2: acc_len=4 → fi_r * 4,               base=16
+    wire [9:0]  conv_wgt_base  = cur_wgt_rd_entry_base +
+                                 ((cur_acc_len == 8'd1) ? {5'd0, fi_r} :
+                                  (cur_acc_len == 8'd4) ? {3'd0, fi_r, 2'd0} : 10'd0);
+    wire [11:0] conv_bias_base = cur_bias_entry_base + {7'd0, fi_r};
 
     conv_top u_conv (
         .clk(clk), .rstn(rstn),
         .i_start(conv_start),
         .o_done(conv_done),
         .o_fil_done(conv_fil_done),
-        .i_conv_pause(1'b0),                   // v1: stream_wgt 미사용 → pause 불필요
+        .i_conv_pause(1'b0),
         .i_stream_wgt_mode(1'b0),
-        .i_mode(1'b0),                         // v1: 3x3 만
-        .i_ofm_w_half(lyr_ofm_w_half),
-        .i_ofm_h_half(12'd1),                  // rb_stream: 한 번에 1 row 만
+        .i_mode(1'b0),
+        .i_ofm_w_half(cur_w_half),
+        .i_ofm_h_half(12'd1),
         .i_row_start(rb_r),
-        .i_co_total(lyr_co),
-        .i_acc_len(lyr_acc_len),
-        .i_wgt_base(10'd0),
-        .i_bias_base(12'd0),
-        .i_shift(lyr_shift),
-        .dma_wgt_we(dma_wgt_we),   .dma_wgt_addr(dma_wgt_addr),   .dma_wgt_data(dma_wgt_data),
-        .dma_bias_we(dma_bias_we), .dma_bias_addr(dma_bias_addr), .dma_bias_data(dma_bias_data),
+        .i_co_total(12'd1),
+        .i_acc_len(cur_acc_len),
+        .i_wgt_base(conv_wgt_base),
+        .i_bias_base(conv_bias_base),
+        .i_shift(cur_shift),
+        .dma_wgt_we(gbuff_wgt_we),     .dma_wgt_addr(gbuff_wgt_addr),     .dma_wgt_data(gbuff_wgt_data),
+        .dma_bias_we(gbuff_bias_we),   .dma_bias_addr(gbuff_bias_addr),   .dma_bias_data(gbuff_bias_data),
         .o_ifm_re(conv_ifm_re),
-        .o_ifm_row(conv_ifm_row), .o_ifm_col(conv_ifm_col), .o_ifm_acc(conv_ifm_acc),
+        .o_ifm_row(conv_ifm_row),
+        .o_ifm_col(conv_ifm_col),
+        .o_ifm_acc(conv_ifm_acc),
         .i_ifm_00(ifm_00), .i_ifm_01(ifm_01),
         .i_ifm_10(ifm_10), .i_ifm_11(ifm_11),
         .o_pixel(conv_pixel),
@@ -556,80 +624,191 @@ module yolo_engine #(
         .o_ofm_addr(conv_ofm_addr)
     );
 
-    //================================================================
-    // max_pool_unit (stride 2)
-    //   v1 에서는 chunked 모드 — 한 chunk 당 dpram[0..N_in-1] 처리.
-    //================================================================
-    reg         pool_start;
+    //----------------------------------------------------------------
+    // OFM dpram — L0 conv 출력 + L1 입력/출력 공용 버퍼
+    //
+    //   Port A (write) 경로:
+    //     - L0 conv: conv_pixel_vld → conv_ofm_addr, conv_pixel
+    //     - L1 IFM load: dma_rd_data_vld @ DMA_TGT_L1_IFM → 0..16383 순차 기록
+    //     - L1 pool: max_pool_unit 의 o_wr_* → 0..4095 (in-place overwrite)
+    //
+    //   Port B (read) 경로:
+    //     - L0/L1 store: dma_wr_indata_req + dpram_store_addr_r → dma_wr_indata
+    //     - L1 pool: max_pool_unit 의 o_rd_* → i_rd_data (1-cycle 지연)
+    //----------------------------------------------------------------
+    reg  [15:0] dpram_store_addr_r;        // DMA wr 가 dpram 에서 읽는 addr
+    reg  [15:0] dpram_store_addr_init_r;   // FSM 이 dma_wr_start 직전에 set
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            dpram_store_addr_r <= 16'd0;
+        end else begin
+            if (dma_wr_start)              dpram_store_addr_r <= dpram_store_addr_init_r;
+            else if (dma_wr_indata_req)    dpram_store_addr_r <= dpram_store_addr_r + 16'd1;
+        end
+    end
+
+    //--------------------------------------------------------------
+    // L1 IFM / REPACK DMA-load 카운터 (DMA rd_data → OFM dpram 직접 기록)
+    //
+    //   L1 IFM load: scratch_a 가 아닌 dpram[0..16383] 전역 사용 — base=0
+    //   REPACK   load: scratch_a 의 ch_l 슬롯 — base = rp_chl_r * 32
+    //--------------------------------------------------------------
+    reg [15:0] l1_ifm_wr_addr_r;
+    reg [15:0] dpram_load_addr_init_r;       // FSM 이 set: DMA 시작 직전
+    wire       l1_ifm_we = dma_rd_data_vld && (dma_target_r == DMA_TGT_L1_IFM);
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            l1_ifm_wr_addr_r <= 16'd0;
+        end else begin
+            if (dma_rd_start && (dma_target_r == DMA_TGT_L1_IFM))
+                l1_ifm_wr_addr_r <= dpram_load_addr_init_r;
+            else if (l1_ifm_we)
+                l1_ifm_wr_addr_r <= l1_ifm_wr_addr_r + 16'd1;
+        end
+    end
+
+    //--------------------------------------------------------------
+    // max_pool_unit (L1 전용)
+    //--------------------------------------------------------------
+    reg         pool_start_r;
     wire        pool_done;
-    reg  [19:0] pool_in_words_r;       // 현재 chunk 의 입력 word 수
     wire        pool_rd_en;
     wire [15:0] pool_rd_addr;
-    wire [31:0] pool_rd_data;
     wire        pool_wr_en;
     wire [15:0] pool_wr_addr;
     wire [31:0] pool_wr_data;
 
+    wire [31:0] ofm_rd_data;
+
     max_pool_unit u_pool (
-        .clk(clk), .rstn(rstn),
-        .i_start(pool_start), .o_done(pool_done),
-        .i_total_in_words(pool_in_words_r),
-        .o_rd_en(pool_rd_en), .o_rd_addr(pool_rd_addr), .i_rd_data(pool_rd_data),
-        .o_wr_en(pool_wr_en), .o_wr_addr(pool_wr_addr), .o_wr_data(pool_wr_data)
+        .clk              (clk),
+        .rstn             (rstn),
+        .i_start          (pool_start_r),
+        .o_done           (pool_done),
+        .i_total_in_words (L1_IFM_WORDS_PER_FI),
+        .o_rd_en          (pool_rd_en),
+        .o_rd_addr        (pool_rd_addr),
+        .i_rd_data        (ofm_rd_data),
+        .o_wr_en          (pool_wr_en),
+        .o_wr_addr        (pool_wr_addr),
+        .o_wr_data        (pool_wr_data)
     );
 
-    //================================================================
-    // OFM dpram (65536 × 32-bit) — yolo_engine_l0_tb 와 동일 파라미터
-    //   Port A (write): conv_pixel / pool_wr / DMA load (pool 모드)
-    //   Port B (read)  : pool_rd / DMA store
-    //================================================================
-    // DMA load (pool input → dpram) 카운터
-    reg  [15:0] dpram_load_addr_r;
-    reg  [15:0] dpram_store_addr_r;
+    //--------------------------------------------------------------
+    // REPACK transpose 엔진 (S_RP_GEN 단계 전용)
+    //
+    //   per col_b (0..31, 9 cycle):
+    //     cycle 0: addr_b = scratch_a + 0*32 + col_b, en_b=1
+    //     cycle 1: latch dout → ch_word[0], addr_b = +1*32 + col_b
+    //     cycle 2: latch → ch_word[1], addr_b = +2*32 + col_b
+    //     cycle 3: latch → ch_word[2], addr_b = +3*32 + col_b
+    //     cycle 4: latch → ch_word[3]  (이 시점 4 channel word 모두 보유)
+    //     cycle 5..8: write transposed out_word[col_l=0..3] → scratch_b[col_b*4 + col_l]
+    //
+    //   transposed out_word[col_l]: 4 byte = {ch3.byte[col_l], ch2, ch1, ch0}
+    //
+    //   col_b counter 32 회 → done.
+    //--------------------------------------------------------------
+    reg [4:0]  rp_gen_cb_r;     // 0..31 col_b
+    reg [3:0]  rp_gen_phase_r;  // 0..8
+    reg [31:0] ch_word_0_r, ch_word_1_r, ch_word_2_r, ch_word_3_r;
+    reg        rp_gen_done_r;   // 1-cycle pulse when all 32 col_b processed
+
+    wire rp_gen_phase = (state_r == S_RP_GEN);
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
-            dpram_load_addr_r  <= 16'd0;
-            dpram_store_addr_r <= 16'd0;
+            rp_gen_cb_r    <= 5'd0;
+            rp_gen_phase_r <= 4'd0;
+            ch_word_0_r    <= 32'd0;
+            ch_word_1_r    <= 32'd0;
+            ch_word_2_r    <= 32'd0;
+            ch_word_3_r    <= 32'd0;
+            rp_gen_done_r  <= 1'b0;
         end else begin
-            // dpram load (pool input) addr
-            if (dma_rd_start && pool_dma_load_r)         dpram_load_addr_r <= 16'd0;
-            else if (dma_rd_data_vld && pool_dma_load_r) dpram_load_addr_r <= dpram_load_addr_r + 16'd1;
+            rp_gen_done_r <= 1'b0;
+            if (state_r == S_RP_LOAD_WAIT && dma_rd_done) begin
+                // REPACK Phase A 의 마지막 channel 적재 완료 → GEN 진입 준비
+                if (rp_chl_r == 3'd3) begin
+                    rp_gen_cb_r    <= 5'd0;
+                    rp_gen_phase_r <= 4'd0;
+                end
+            end else if (rp_gen_phase) begin
+                // phase 0..3 에서 dpram dout 1-cycle 지연 후 latch
+                // ofm_rd_data 는 1 cycle 전 addr_b 의 결과
+                case (rp_gen_phase_r)
+                    4'd1: ch_word_0_r <= ofm_rd_data;
+                    4'd2: ch_word_1_r <= ofm_rd_data;
+                    4'd3: ch_word_2_r <= ofm_rd_data;
+                    4'd4: ch_word_3_r <= ofm_rd_data;
+                    default: ;
+                endcase
 
-            // dpram store addr — conv 모드는 fil 의 dpram base, pool 모드는 0
-            if (dma_wr_start) begin
-                if (pool_dma_store_r) dpram_store_addr_r <= 16'd0;
-                else                  dpram_store_addr_r <= ofm_dpram_base;
-            end else if (dma_wr_indata_req)
-                dpram_store_addr_r <= dpram_store_addr_r + 16'd1;
+                if (rp_gen_phase_r == 4'd8) begin
+                    rp_gen_phase_r <= 4'd0;
+                    if (rp_gen_cb_r == 5'd31) begin
+                        rp_gen_done_r <= 1'b1;
+                    end else begin
+                        rp_gen_cb_r <= rp_gen_cb_r + 5'd1;
+                    end
+                end else begin
+                    rp_gen_phase_r <= rp_gen_phase_r + 4'd1;
+                end
+            end
         end
     end
 
-    // OFM dpram port A (write) mux:
-    //   1) conv_pixel — conv layer 진행 중
-    //   2) pool_wr    — max_pool_unit 의 in-place write
-    //   3) DMA load   — pool input 을 DRAM 에서 dpram 으로 적재
-    wire        dma_dpram_we      = dma_rd_data_vld && pool_dma_load_r;
-    wire        ofm_wr_en   = conv_pixel_vld | pool_wr_en | dma_dpram_we;
-    wire [15:0] ofm_wr_addr =
-                  conv_pixel_vld ? conv_ofm_addr[15:0] :
-                  pool_wr_en     ? pool_wr_addr        :
-                                   dpram_load_addr_r;
-    wire [31:0] ofm_wr_data =
-                  conv_pixel_vld ? conv_pixel :
-                  pool_wr_en     ? pool_wr_data :
-                                   dma_rd_data;
+    // GEN 의 Port B read addr (phase 0..3) — scratch_a 의 ch_l × 32 + col_b
+    //   ch_l = phase[1:0], col_b = cb_r[4:0]
+    //   addr = {ch_l, col_b}  (총 7-bit, 16-bit zero-pad)
+    wire [15:0] rp_gen_rd_addr = SCRATCH_A_BASE + {9'd0, rp_gen_phase_r[1:0], rp_gen_cb_r[4:0]};
+    wire        rp_gen_rd_en   = rp_gen_phase && (rp_gen_phase_r <= 4'd3);
 
-    // OFM dpram port B (read) mux:
-    //   1) pool_rd  — max_pool_unit 의 read
-    //   2) DMA store — OFM 을 DRAM 으로 dump
-    wire        ofm_rd_en   = pool_rd_en | dma_wr_indata_req | pool_dma_store_r;
-    wire [15:0] ofm_rd_addr =
-                  pool_rd_en ? pool_rd_addr :
-                               dpram_store_addr_r;
-    wire [31:0] ofm_rd_data;
+    // GEN 의 Port A write — phase 5..8 에서 transposed word 출력
+    //   col_l = phase - 5  (0..3)
+    //   addr  = SCRATCH_B_BASE + col_b*4 + col_l
+    wire [1:0] rp_gen_col_l =
+        (rp_gen_phase_r == 4'd5) ? 2'd0 :
+        (rp_gen_phase_r == 4'd6) ? 2'd1 :
+        (rp_gen_phase_r == 4'd7) ? 2'd2 :
+        (rp_gen_phase_r == 4'd8) ? 2'd3 : 2'd0;
 
-    assign pool_rd_data = ofm_rd_data;
+    wire [15:0] rp_gen_wr_addr = SCRATCH_B_BASE + {9'd0, rp_gen_cb_r[4:0], rp_gen_col_l};
+    wire [31:0] rp_gen_wr_data = {
+        ch_word_3_r[rp_gen_col_l*8 +: 8],
+        ch_word_2_r[rp_gen_col_l*8 +: 8],
+        ch_word_1_r[rp_gen_col_l*8 +: 8],
+        ch_word_0_r[rp_gen_col_l*8 +: 8]
+    };
+    wire        rp_gen_wr_en   = rp_gen_phase && (rp_gen_phase_r >= 4'd5);
+
+    //--------------------------------------------------------------
+    // OFM dpram Port A/B mux
+    //--------------------------------------------------------------
+    wire pool_phase = (state_r == S_L1_FI_POOL_WAIT);
+
+    wire        ofm_wr_en   = pool_phase    ? pool_wr_en :
+                              rp_gen_wr_en  ? 1'b1       :
+                              l1_ifm_we     ? 1'b1       :
+                                              conv_pixel_vld;
+    wire [15:0] ofm_wr_addr = pool_phase    ? pool_wr_addr :
+                              rp_gen_wr_en  ? rp_gen_wr_addr :
+                              l1_ifm_we     ? l1_ifm_wr_addr_r :
+                                              conv_ofm_addr[15:0];
+    wire [31:0] ofm_wr_data = pool_phase    ? pool_wr_data :
+                              rp_gen_wr_en  ? rp_gen_wr_data :
+                              l1_ifm_we     ? dma_rd_data  :
+                                              conv_pixel;
+
+    wire        ofm_rd_en   = pool_phase    ? pool_rd_en   :
+                              rp_gen_rd_en  ? 1'b1         :
+                                              dma_wr_indata_req;
+    wire [15:0] ofm_rd_addr = pool_phase    ? pool_rd_addr :
+                              rp_gen_rd_en  ? rp_gen_rd_addr :
+                                              dpram_store_addr_r;
+
     assign dma_wr_indata = ofm_rd_data;
 
     dpram_wrapper #(.DW(32), .AW(16), .DEPTH(65536), .N_DELAY(1)) u_ofm (
@@ -643,321 +822,339 @@ module yolo_engine #(
         .dob   (ofm_rd_data)
     );
 
-    //================================================================
-    // Pool chunking
+    //----------------------------------------------------------------
+    // DRAM 주소 계산
+    //----------------------------------------------------------------
+    // Weight base : L0 → dram_wgt_base, L2 → dram_wgt_base + 1024 byte
+    wire [31:0] addr_wgt  = dram_wgt_base + (is_conv_l2 ? L2_WGT_BYTE_OFF : 32'd0);
+    // Bias base   : dram_wgt_base + 0x00A00000 (+ L2 offset 64 byte)
+    wire [31:0] addr_bias = dram_wgt_base + 32'h00A00000 +
+                            (is_conv_l2 ? L2_BIAS_BYTE_OFF : 32'd0);
+
+    // IFM row stride byte: L0=1024 (W*4ch=256*4), L2=2048 (128*16ch)
+    //   ifm_first_row 는 ifm_first_row_for_rb 와 row stride 의 곱.
+    //   row stride : L0=1024 (<<10), L2=2048 (<<11)
+    wire [11:0] ifm_first_row_for_rb = (rb_r == 12'd0) ? 12'd0 : ({rb_r[10:0], 1'b0}) + 12'd1;
+    wire [31:0] cur_ifm_base = is_conv_l2 ?
+                               (dram_ofm_base + L2_IFM_BYTE_BASE) :
+                               dram_ifm_base;
+    wire [31:0] addr_ifm_byte = cur_ifm_base +
+                                (is_conv_l2 ?
+                                   ({20'd0, ifm_first_row_for_rb} << 11) :
+                                   ({20'd0, ifm_first_row_for_rb} << 10));
+
+    // OFM per (rb, fi):
+    //   L0: ofm_base + fi*65536 + rb*512
+    //     fi*16384 word (W_HALF^2=16384) × 4 byte/word = 65536 byte = fi << 16
+    //     rb*128  word (W_HALF=128) × 4 = 512 byte = rb << 9
+    //   L2: ofm_base + L2_OFM_BYTE_BASE + fi*16384 + rb*256
+    //     fi*4096 word (W_HALF^2=4096) × 4 = 16384 byte = fi << 14
+    //     rb*64   word (W_HALF=64) × 4 = 256 byte = rb << 8
+    wire [31:0] addr_ofm_byte = is_conv_l2 ?
+        (dram_ofm_base + L2_OFM_BYTE_BASE + ({13'd0, fi_r, 14'd0}) + ({18'd0, rb_r, 8'd0}))
+      : (dram_ofm_base + ({11'd0, fi_r, 16'd0}) + ({16'd0, rb_r, 9'b0}));
+
+    // L1 IFM (= L0 OFM[fi]) : dram_ofm_base + fi × 65536 byte
+    wire [31:0] addr_l1_ifm_byte = dram_ofm_base + ({11'd0, fi_r} * L0_OFM_FI_BYTE);
+    // L1 OFM[fi]            : dram_ofm_base + 1,048,576 + fi × 16384 byte
+    wire [31:0] addr_l1_ofm_byte = dram_ofm_base + L1_OFM_BYTE_BASE + ({11'd0, fi_r} * L1_OFM_FI_BYTE);
+
+    //----------------------------------------------------------------
+    // REPACK 주소 (row r, ci_g, ch_l within group)
+    //----------------------------------------------------------------
+    reg [11:0] rp_row_r;     // 0..127
+    reg [2:0]  rp_cig_r;     // 0..3 (ci_group)
+    reg [2:0]  rp_chl_r;     // 0..3 (ch within group, Phase A load 시)
+
+    // REPACK Load 주소: L1 OFM 의 (ch_full=cig*4+chl, row=rp_row, col=0..31) 한 row
+    //   byte_addr = L1_OFM_BYTE_BASE + ch_full*16384 + rp_row*128
+    wire [4:0]  rp_chfull = {rp_cig_r[1:0], rp_chl_r[1:0]};
+    wire [31:0] addr_rp_load_byte =
+        dram_ofm_base + L1_OFM_BYTE_BASE +
+        ({11'd0, rp_chfull} * 32'd16384) +
+        ({20'd0, rp_row_r} * L1_OFM_ROW_BYTE);
+
+    // REPACK Store 주소: L2 IFM 의 (row=rp_row, ci_g=rp_cig, col_b=0..31)
+    //   byte_addr = L2_IFM_BYTE_BASE + rp_row*2048 + rp_cig*512
+    wire [31:0] addr_rp_store_byte =
+        dram_ofm_base + L2_IFM_BYTE_BASE +
+        ({20'd0, rp_row_r} * L2_IFM_ROW_BYTE) +
+        ({29'd0, rp_cig_r} * L2_IFM_CIG_BYTE_PER_R);
+
+    //----------------------------------------------------------------
+    // Main FSM
     //
-    //   L1 pool: input = 16 fil × 128 × 128 = 262144 word > 65536 dpram
-    //   Chunk = 4 fil × 16384 word = 65536 word.
-    //   N_chunks = 262144 / 65536 = 4.
-    //
-    //   각 chunk 에 대해:
-    //     - DMA RD : DRAM[L0 OFM + chunk × 65536 word .. ] → dpram[0..65535]
-    //     - max_pool: dpram[0..65535] → dpram[0..16383] (in-place 안전성 검증됨)
-    //     - DMA WR : dpram[0..16383] → DRAM[L1 OFM + chunk × 16384 word ..]
-    //
-    //   ※ 일반화: chunk_in_words = min(65536, remaining)
-    //              chunk_out_words = chunk_in_words / 4
-    //================================================================
-    reg  [3:0]  pool_chunk_idx_r;
-    reg  [3:0]  pool_n_chunks_r;
-    wire [19:0] pool_total_words = ({8'd0, lyr_co} *
-                                    {4'd0, lyr_ofm_w, 4'd0}); // Co × W × 16? — 잘못
-    // 올바른 식: pool 입력 = prev_layer_OFM = Co × (W*2) × (H*2) packed word
-    //            = Co × (lyr_ofm_w*2 * lyr_ofm_h*2) / 4
-    //            = Co × W × H ÷ 4 × 4? 헷갈리므로 명시적으로
-    //
-    // L1 의 경우: lyr_ofm_w=128, lyr_ofm_h=128 (= L1 output 크기)
-    //            L0 OFM packed word = 16 × 128 × 128 = 262144
-    // 일반화: L1 OFM packed = lyr_co × lyr_ofm_w × lyr_ofm_h = pool 출력 word
-    //          L1 IFM packed (= L0 OFM) = 4 × pool 출력 = 4 × lyr_co × lyr_ofm_w × lyr_ofm_h
-    wire [21:0] pool_in_total_words  = ({10'd0, lyr_co} *
-                                       {10'd0, lyr_ofm_w} *
-                                       {10'd0, lyr_ofm_h});  // pool_out × 4? — Let me think
-    // Actually pool out word = Co × (W/2) × (H/2). 하지만 v1 에서 lyr_ofm_w/h 가
-    // 이미 pool 의 OUTPUT 크기 (= L1 의 128) 로 설정됨. 그러면:
-    //   pool input word = 4 × pool output word = 4 × Co × ofm_w_half × ofm_h_half
-    //   여기서 ofm_w_half/h_half 는 pool output 의 W/2,H/2 — 안 맞음.
-    //
-    // 정정: L1 pool 의 lyr_ofm_w=128 은 pool 출력의 가로 (= L0 출력 / 2).
-    //       L1 pool 의 input packed word = 16 × 128 × 128 = 262144
-    //       L1 pool 의 output packed word = 16 × 64 × 64 = 65536
-    //       즉 pool input = lyr_co × lyr_ofm_w × lyr_ofm_h = 16 × 128 × 128 = 262144 ✓
-    /* verilator lint_off UNUSED */
-    wire _unused_pin = |pool_total_words;
-    /* verilator lint_on UNUSED */
-
-    wire [21:0] pool_out_total_words =
-                ({10'd0, lyr_co} *
-                 {10'd0, lyr_ofm_w_half} *
-                 {10'd0, lyr_ofm_h_half});
-
-    // pool 입력 총 word: lyr_co × lyr_ofm_w × lyr_ofm_h (L1 = 16 × 128 × 128 = 262144)
-    wire [21:0] pool_in_total_22 = ({10'd0, lyr_co} *
-                                    {10'd0, lyr_ofm_w} *
-                                    {10'd0, lyr_ofm_h});
-
-    //================================================================
-    // Top FSM — 본체
-    //================================================================
-    // rb_stream IFM DMA 워드 수 계산
-    //   초기 (rb=0): 3 row = 3 × entries_per_row × 4 word
-    //   이후 (rb>0): 2 row = 2 × entries_per_row × 4 word
-    wire [19:0] ifm_dma_init_words = ({4'd0, entries_per_row} * 16'd3) << 2;
-    wire [19:0] ifm_dma_next_words = ({4'd0, entries_per_row} * 16'd2) << 2;
-
-    // Conv weight / bias DMA 워드 수
-    //   weight = Co × acc_len × 16 word (16-byte entry × 4 word/entry × Co × acc_len)
-    wire [21:0] wgt_dma_words = ({10'd0, lyr_co} * {14'd0, lyr_acc_len}) << 4;
-    wire [11:0] bias_dma_words = lyr_co;
-
-    // RB 별 IFM row 번호 (rb_stream 매핑)
-    //   rb=0: rows 0, 1, 2 적재 (window row -1 = padding 으로 처리)
-    //   rb>0: rows (2*rb+1), (2*rb+2) 적재 (rows 2*rb-1, 2*rb 는 이전 rb 에서 적재됨)
-    wire [11:0] rb_init_first_row = 12'd0;
-    wire [11:0] rb_next_first_row = ({rb_r[10:0], 1'b0}) + 12'd1;  // 2*rb+1
-
-    // OFM DMA store per rb (한 filter 의 한 row = ofm_w_half words)
-    //   fil 별로 별도 DMA. dpram 내 fil 의 시작 addr = fil × ofm_w_half
-    //   DRAM 내 fil 의 시작 byte = lyr_ofm_offset_w × 4
-    //                              + fil × (ofm_w_half × ofm_h_half) × 4
-    //                              + rb × ofm_w_half × 4
-    reg [11:0] ofm_fil_r;     // 현재 DMA 중인 filter (0..lyr_co-1)
-    wire [21:0] fil_dram_base_words = ({10'd0, ofm_fil_r} *
-                                       {10'd0, lyr_ofm_w_half} *
-                                       {10'd0, lyr_ofm_h_half});
-    wire [21:0] rb_row_offset_words = {10'd0, rb_r} * {10'd0, lyr_ofm_w_half};
-    wire [31:0] ofm_dma_addr        = addr_ofm +
-                                      ({10'd0, fil_dram_base_words} << 2) +
-                                      ({10'd0, rb_row_offset_words} << 2);
-    wire [15:0] ofm_dpram_base      = {4'd0, ofm_fil_r} * {4'd0, lyr_ofm_w_half};
-
-    // 메인 FSM body
+    //   All FSM-controlled registers (state_r, rb_r, fi_r, layer_idx,
+    //   dma_target_r, dma_rd_*, dma_wr_*, conv_start, dma_ifm_row_start_r,
+    //   network_done_r) updated only here.
+    //----------------------------------------------------------------
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
-            top_state         <= ST_IDLE;
-            layer_idx         <= 5'd0;
-            dma_target_r      <= DMA_TGT_NONE;
-            pool_dma_load_r   <= 1'b0;
-            pool_dma_store_r  <= 1'b0;
-            dma_rd_start      <= 1'b0;
-            dma_rd_num_trans  <= 20'd0;
-            dma_rd_start_addr <= 32'd0;
-            dma_wr_start      <= 1'b0;
-            dma_wr_num_trans  <= 20'd0;
-            dma_wr_start_addr <= 32'd0;
-            conv_start        <= 1'b0;
-            pool_start        <= 1'b0;
-            network_done_r    <= 1'b0;
-            rb_r              <= 12'd0;
-            ofm_fil_r         <= 12'd0;
-            pool_chunk_idx_r  <= 4'd0;
-            pool_n_chunks_r   <= 4'd0;
-            pool_in_words_r   <= 20'd0;
-            dma_ifm_row_start_r <= 12'd0;
+            state_r                 <= S_IDLE;
+            rb_r                    <= 12'd0;
+            fi_r                    <= 5'd0;
+            layer_idx               <= 5'd0;
+            conv_phase_r            <= 5'd0;
+            dma_target_r            <= DMA_TGT_NONE;
+            dma_rd_start            <= 1'b0;
+            dma_rd_num_trans        <= 20'd0;
+            dma_rd_start_addr       <= 32'd0;
+            dma_wr_start            <= 1'b0;
+            dma_wr_num_trans        <= 20'd0;
+            dma_wr_start_addr       <= 32'd0;
+            dpram_store_addr_init_r <= 16'd0;
+            dpram_load_addr_init_r  <= 16'd0;
+            conv_start              <= 1'b0;
+            pool_start_r            <= 1'b0;
+            dma_ifm_row_start_r     <= 12'd0;
+            rp_row_r                <= 12'd0;
+            rp_cig_r                <= 3'd0;
+            rp_chl_r                <= 3'd0;
+            network_done_r          <= 1'b0;
         end else begin
             // 1-cycle pulse defaults
             dma_rd_start <= 1'b0;
             dma_wr_start <= 1'b0;
             conv_start   <= 1'b0;
-            pool_start   <= 1'b0;
+            pool_start_r <= 1'b0;
 
-            case (top_state)
+            case (state_r)
                 //------------------------------------------------
-                ST_IDLE: begin
+                S_IDLE: begin
                     if (ap_start) begin
-                        layer_idx      <= 5'd0;
-                        network_done_r <= 1'b0;
-                        top_state      <= ST_INIT;
+                        rb_r            <= 12'd0;
+                        fi_r            <= 5'd0;
+                        layer_idx       <= 5'd0;
+                        conv_phase_r    <= 5'd0;
+                        network_done_r  <= 1'b0;
+                        state_r         <= S_LOAD_WGT;
                     end
                 end
 
                 //------------------------------------------------
-                ST_INIT: begin
-                    // 1 cycle 대기 (layer 파라미터 안정화)
-                    if (lyr_is_conv) begin
-                        top_state <= ST_LOAD_WGT;
-                    end else if (lyr_is_pool) begin
-                        // pool n_chunks 계산: ceil(pool_in_total / 65536)
-                        //   v1: L1 만 지원, 정확히 나눠떨어진다는 가정. pool_in_total >> 16
-                        pool_chunk_idx_r <= 4'd0;
-                        pool_n_chunks_r  <= pool_in_total_22[21:16];
-                        top_state <= ST_POOL_DMA_IFM;
-                    end else begin
-                        top_state <= ST_LAYER_NEXT;
-                    end
-                end
-
-                //================================================
-                // Conv path
-                //================================================
-                ST_LOAD_WGT: begin
+                S_LOAD_WGT: begin
                     dma_target_r      <= DMA_TGT_WGT;
-                    dma_rd_num_trans  <= wgt_dma_words[19:0];
+                    dma_rd_num_trans  <= cur_wgt_dma;
                     dma_rd_start_addr <= addr_wgt;
                     dma_rd_start      <= 1'b1;
-                    top_state         <= ST_LOAD_WGT_WAIT;
+                    state_r           <= S_LOAD_WGT_WAIT;
                 end
-                ST_LOAD_WGT_WAIT: begin
-                    if (dma_rd_done) top_state <= ST_LOAD_BIAS;
+                S_LOAD_WGT_WAIT: begin
+                    if (dma_rd_done) state_r <= S_LOAD_BIAS;
                 end
 
-                ST_LOAD_BIAS: begin
+                //------------------------------------------------
+                S_LOAD_BIAS: begin
                     dma_target_r      <= DMA_TGT_BIAS;
-                    dma_rd_num_trans  <= {8'd0, bias_dma_words};
+                    dma_rd_num_trans  <= cur_bias_dma;
                     dma_rd_start_addr <= addr_bias;
                     dma_rd_start      <= 1'b1;
-                    top_state         <= ST_LOAD_BIAS_WAIT;
+                    state_r           <= S_LOAD_BIAS_WAIT;
                 end
-                ST_LOAD_BIAS_WAIT: begin
+                S_LOAD_BIAS_WAIT: begin
                     if (dma_rd_done) begin
-                        rb_r       <= 12'd0;
-                        top_state  <= ST_RB_DMA_IFM;
+                        rb_r    <= 12'd0;
+                        state_r <= S_RB_DMA_IFM;
                     end
                 end
 
                 //------------------------------------------------
-                // rb_stream 루프 : DMA IFM → CONV → DMA OFM × Co → rb++
-                ST_RB_DMA_IFM: begin
-                    dma_target_r      <= DMA_TGT_IFM;
-                    if (rb_r == 12'd0) begin
-                        // 초기 3 row 적재: row 0, 1, 2 (window row -1 은 padding)
-                        dma_ifm_row_start_r <= rb_init_first_row;
-                        dma_rd_num_trans    <= ifm_dma_init_words;
-                        dma_rd_start_addr   <= addr_ifm;
-                    end else begin
-                        // 이후 2 row 적재: row 2*rb+1, 2*rb+2
-                        dma_ifm_row_start_r <= rb_next_first_row;
-                        dma_rd_num_trans    <= ifm_dma_next_words;
-                        // DRAM byte addr = addr_ifm + (2*rb+1) × entries_per_row × 16 byte
-                        dma_rd_start_addr   <= addr_ifm +
-                            (({20'd0, rb_next_first_row} *
-                              {16'd0, entries_per_row}) << 4);
-                    end
-                    dma_rd_start <= 1'b1;
-                    top_state    <= ST_RB_DMA_IFM_WAIT;
+                S_RB_DMA_IFM: begin
+                    dma_target_r        <= DMA_TGT_IFM;
+                    dma_ifm_row_start_r <= ifm_first_row_for_rb;
+                    dma_rd_num_trans    <= (rb_r == 12'd0) ? cur_ifm_init : cur_ifm_next;
+                    dma_rd_start_addr   <= addr_ifm_byte;
+                    dma_rd_start        <= 1'b1;
+                    state_r             <= S_RB_DMA_IFM_WAIT;
                 end
-                ST_RB_DMA_IFM_WAIT: begin
-                    if (dma_rd_done) top_state <= ST_CONV_START;
+                S_RB_DMA_IFM_WAIT: begin
+                    if (dma_rd_done) begin
+                        fi_r    <= 5'd0;
+                        state_r <= S_FIL_CONV_START;
+                    end
                 end
 
-                ST_CONV_START: begin
+                //------------------------------------------------
+                S_FIL_CONV_START: begin
                     conv_start <= 1'b1;
-                    top_state  <= ST_CONV_WAIT;
+                    state_r    <= S_FIL_CONV_WAIT;
                 end
-                ST_CONV_WAIT: begin
-                    if (conv_done) begin
-                        ofm_fil_r <= 12'd0;
-                        top_state <= ST_RB_DMA_OFM;
-                    end
+                S_FIL_CONV_WAIT: begin
+                    if (conv_done) state_r <= S_FIL_DMA_STORE;
                 end
 
                 //------------------------------------------------
-                // OFM DMA : Co 개 filter 각각 ofm_w_half word 씩
-                ST_RB_DMA_OFM: begin
-                    pool_dma_store_r  <= 1'b0;  // conv 모드: dpram_store_addr_r 직접 사용
-                    // dpram addr 시작 = fil × ofm_w_half  ← dpram_store_addr_r 초기값
-                    // 그러나 dpram_store_addr_r 의 reset 은 dma_wr_start && pool_dma_store_r 에만 됨
-                    // → conv 모드에서는 fil 별 시작 addr 을 별도로 셋업.
-                    //   여기서는 dma_wr_indata_req 첫 cycle 이 ofm_dpram_base 를 가리키도록
-                    //   별도 메커니즘 필요 — 아래 dpram_store_addr_r 갱신 로직 수정.
-                    dma_wr_num_trans  <= {8'd0, lyr_ofm_w_half};
-                    dma_wr_start_addr <= ofm_dma_addr;
-                    dma_wr_start      <= 1'b1;
-                    top_state         <= ST_RB_DMA_OFM_WAIT;
+                S_FIL_DMA_STORE: begin
+                    dma_wr_num_trans        <= cur_ofm_fil;
+                    dma_wr_start_addr       <= addr_ofm_byte;
+                    dpram_store_addr_init_r <= 16'd0;
+                    dma_wr_start            <= 1'b1;
+                    state_r                 <= S_FIL_DMA_STORE_WAIT;
                 end
-                ST_RB_DMA_OFM_WAIT: begin
+                S_FIL_DMA_STORE_WAIT: begin
                     if (dma_wr_done) begin
-                        if (ofm_fil_r == lyr_co - 12'd1) begin
-                            top_state <= ST_RB_NEXT;
+                        if (fi_r == cur_co[4:0] - 5'd1) begin
+                            state_r <= S_RB_NEXT;
                         end else begin
-                            ofm_fil_r <= ofm_fil_r + 12'd1;
-                            top_state <= ST_RB_DMA_OFM;
+                            fi_r    <= fi_r + 5'd1;
+                            state_r <= S_FIL_CONV_START;
                         end
                     end
                 end
 
                 //------------------------------------------------
-                ST_RB_NEXT: begin
-                    if (rb_r == lyr_ofm_h_half - 12'd1) begin
-                        top_state <= ST_LAYER_NEXT;
+                S_RB_NEXT: begin
+                    if (rb_r == cur_h_half - 12'd1) begin
+                        state_r <= S_CONV_DONE;
                     end else begin
-                        rb_r      <= rb_r + 12'd1;
-                        top_state <= ST_RB_DMA_IFM;
+                        rb_r    <= rb_r + 12'd1;
+                        state_r <= S_RB_DMA_IFM;
                     end
                 end
 
-                //================================================
-                // Pool path
-                //================================================
-                ST_POOL_DMA_IFM: begin
-                    dma_target_r      <= DMA_TGT_NONE;
-                    pool_dma_load_r   <= 1'b1;
-                    // chunk 입력 word = 65536 (고정), 마지막 chunk 도 동일 (정확 나눠 떨어짐 가정)
-                    dma_rd_num_trans  <= 20'd65536;
-                    // DRAM byte addr = addr_ifm + chunk × 65536 word × 4 byte
-                    dma_rd_start_addr <= addr_ifm + ({18'd0, pool_chunk_idx_r} << 18);
-                    dma_rd_start      <= 1'b1;
-                    pool_in_words_r   <= 20'd65536;
-                    top_state         <= ST_POOL_DMA_IFM_WAIT;
+                //------------------------------------------------
+                // Conv 완료 → 다음 phase 분기
+                //   L0 (conv_phase_r=0) 완료 → L1 진입
+                //   L2 (conv_phase_r=2) 완료 → 최종 종료
+                //------------------------------------------------
+                S_CONV_DONE: begin
+                    if (conv_phase_r == 5'd0) begin
+                        layer_idx    <= 5'd1;
+                        fi_r         <= 5'd0;
+                        dma_target_r <= DMA_TGT_NONE;
+                        state_r      <= S_L1_FI_LOAD;
+                    end else begin
+                        // conv_phase_r == 5'd2 → L2 완료
+                        layer_idx      <= 5'd3;
+                        network_done_r <= 1'b1;
+                        state_r        <= S_DONE;
+                    end
                 end
-                ST_POOL_DMA_IFM_WAIT: begin
+
+                //------------------------------------------------
+                // L1 : POOL_S2 — fi 별 (load → pool → store)
+                //------------------------------------------------
+                S_L1_FI_LOAD: begin
+                    dma_target_r           <= DMA_TGT_L1_IFM;
+                    dpram_load_addr_init_r <= 16'd0;
+                    dma_rd_num_trans       <= L1_IFM_WORDS_PER_FI;     // 16,384 word
+                    dma_rd_start_addr      <= addr_l1_ifm_byte;
+                    dma_rd_start           <= 1'b1;
+                    state_r                <= S_L1_FI_LOAD_WAIT;
+                end
+                S_L1_FI_LOAD_WAIT: begin
+                    if (dma_rd_done) state_r <= S_L1_FI_POOL;
+                end
+
+                S_L1_FI_POOL: begin
+                    pool_start_r <= 1'b1;
+                    state_r      <= S_L1_FI_POOL_WAIT;
+                end
+                S_L1_FI_POOL_WAIT: begin
+                    if (pool_done) state_r <= S_L1_FI_STORE;
+                end
+
+                S_L1_FI_STORE: begin
+                    dma_wr_num_trans        <= L1_OFM_WORDS_PER_FI;     // 4,096 word
+                    dma_wr_start_addr       <= addr_l1_ofm_byte;
+                    dpram_store_addr_init_r <= 16'd0;
+                    dma_wr_start            <= 1'b1;
+                    state_r                 <= S_L1_FI_STORE_WAIT;
+                end
+                S_L1_FI_STORE_WAIT: begin
+                    if (dma_wr_done) state_r <= S_L1_NEXT_FI;
+                end
+
+                S_L1_NEXT_FI: begin
+                    if (fi_r == L1_CO - 5'd1) begin
+                        // L1 완료 → REPACK 진입
+                        layer_idx <= 5'd2;
+                        rp_row_r  <= 12'd0;
+                        rp_cig_r  <= 3'd0;
+                        rp_chl_r  <= 3'd0;
+                        state_r   <= S_RP_LOAD;
+                    end else begin
+                        fi_r    <= fi_r + 5'd1;
+                        state_r <= S_L1_FI_LOAD;
+                    end
+                end
+
+                //------------------------------------------------
+                // REPACK : per (row, ci_g, ch_l) channel row → scratch_a
+                //   ch_l 0..3 적재 후 GEN → STORE → 다음 ci_g
+                //   ci_g 0..3 처리 후 → 다음 row
+                //------------------------------------------------
+                S_RP_LOAD: begin
+                    dma_target_r           <= DMA_TGT_L1_IFM;
+                    dpram_load_addr_init_r <= ({11'd0, rp_chl_r[1:0]} << 5);   // ch_l*32
+                    dma_rd_num_trans       <= REPACK_LOAD_WORDS_PER_BURST;
+                    dma_rd_start_addr      <= addr_rp_load_byte;
+                    dma_rd_start           <= 1'b1;
+                    state_r                <= S_RP_LOAD_WAIT;
+                end
+                S_RP_LOAD_WAIT: begin
                     if (dma_rd_done) begin
-                        pool_dma_load_r <= 1'b0;
-                        top_state       <= ST_POOL_RUN;
+                        if (rp_chl_r == 3'd3) begin
+                            // 4 channel 적재 완료 → GEN
+                            rp_chl_r <= 3'd0;
+                            state_r  <= S_RP_GEN;
+                        end else begin
+                            rp_chl_r <= rp_chl_r + 3'd1;
+                            state_r  <= S_RP_LOAD;
+                        end
                     end
                 end
 
-                ST_POOL_RUN: begin
-                    pool_start <= 1'b1;
-                    top_state  <= ST_POOL_WAIT;
-                end
-                ST_POOL_WAIT: begin
-                    if (pool_done) top_state <= ST_POOL_DMA_OFM;
+                S_RP_GEN: begin
+                    // GEN 카운터 자동 진행. 완료 신호 rp_gen_done_r 를 대기.
+                    if (rp_gen_done_r) state_r <= S_RP_STORE;
                 end
 
-                ST_POOL_DMA_OFM: begin
-                    pool_dma_store_r  <= 1'b1;
-                    // chunk 출력 word = 65536 / 4 = 16384
-                    dma_wr_num_trans  <= 20'd16384;
-                    // DRAM byte addr = addr_ofm + chunk × 16384 word × 4 byte
-                    dma_wr_start_addr <= addr_ofm + ({18'd0, pool_chunk_idx_r} << 16);
-                    dma_wr_start      <= 1'b1;
-                    top_state         <= ST_POOL_DMA_OFM_WAIT;
+                S_RP_STORE: begin
+                    dma_wr_num_trans        <= REPACK_STORE_WORDS_PER_CIG;   // 128 word
+                    dma_wr_start_addr       <= addr_rp_store_byte;
+                    dpram_store_addr_init_r <= SCRATCH_B_BASE;
+                    dma_wr_start            <= 1'b1;
+                    state_r                 <= S_RP_STORE_WAIT;
                 end
-                ST_POOL_DMA_OFM_WAIT: begin
-                    if (dma_wr_done) begin
-                        pool_dma_store_r <= 1'b0;
-                        top_state        <= ST_POOL_NEXT;
-                    end
+                S_RP_STORE_WAIT: begin
+                    if (dma_wr_done) state_r <= S_RP_NEXT_CIG;
                 end
 
-                ST_POOL_NEXT: begin
-                    if (pool_chunk_idx_r == pool_n_chunks_r - 4'd1) begin
-                        top_state <= ST_LAYER_NEXT;
+                S_RP_NEXT_CIG: begin
+                    if (rp_cig_r == 3'd3) begin
+                        rp_cig_r <= 3'd0;
+                        if (rp_row_r == 12'd127) begin
+                            // REPACK 완료 → L2 진입
+                            conv_phase_r <= 5'd2;
+                            rb_r         <= 12'd0;
+                            fi_r         <= 5'd0;
+                            state_r      <= S_LOAD_WGT;
+                        end else begin
+                            rp_row_r <= rp_row_r + 12'd1;
+                            state_r  <= S_RP_LOAD;
+                        end
                     end else begin
-                        pool_chunk_idx_r <= pool_chunk_idx_r + 4'd1;
-                        top_state        <= ST_POOL_DMA_IFM;
+                        rp_cig_r <= rp_cig_r + 3'd1;
+                        state_r  <= S_RP_LOAD;
                     end
                 end
 
-                //================================================
-                ST_LAYER_NEXT: begin
-                    if (layer_idx == 5'd2) begin     // v1: L0,L1,L2 까지만
-                        top_state <= ST_DONE;
-                    end else begin
-                        layer_idx <= layer_idx + 5'd1;
-                        top_state <= ST_INIT;
-                    end
-                end
-
-                ST_DONE: begin
+                //------------------------------------------------
+                S_DONE: begin
                     network_done_r <= 1'b1;
-                    if (!ap_start) top_state <= ST_IDLE;
+                    if (!ap_start) state_r <= S_IDLE;
                 end
 
-                default: top_state <= ST_IDLE;
+                default: state_r <= S_IDLE;
             endcase
         end
     end
+
+    //----------------------------------------------------------------
+    // gbuff_param
+    //----------------------------------------------------------------
+    // conv_top 이 자체적으로 인스턴스화하므로 여기서 별도 필요 없음.
+    // (conv_top.v 내부에 gbuff_param u_gbuff 인스턴스 있음)
 
 endmodule

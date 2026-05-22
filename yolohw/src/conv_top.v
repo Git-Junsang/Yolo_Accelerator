@@ -222,12 +222,13 @@ module conv_top(
                 end
 
                 ST_LOAD: begin
-                    // ST_LOAD 1 cycle: 첫 read 발사 (BRAM 입력 = wgt_addr_r)
-                    //   - ST_LOAD cycle 의 wgt_addr_r 발사값 = wgt_base (이전 cycle 갱신)
-                    //   - 다음 cycle (ST_RUN 1st) wgt_data = entry 0 ✓
-                    //   - 이 cycle 갱신: 다음 cycle 에 발사할 wgt_addr (= entry 1)
-                    if (i_acc_len == 8'd1) wgt_addr_r <= wgt_base_r;
-                    else                   wgt_addr_r <= wgt_base_r + 10'd1;
+                    // ST_LOAD 1 cycle: BRAM 입력 = wgt_base (ST_IDLE 갱신값 유지)
+                    //   다음 cycle (ST_RUN cyc 0) BRAM 출력 = entry[wgt_base]
+                    //   mac_vld_d 는 cyc 1 에서 high → mac_kern 에 entry[wgt_base] 가
+                    //   ifm(acc=0) 와 함께 도착하도록 wgt_addr_r 을 advance 하지 않음.
+                    //   (이전 버전은 +1 했는데, ifm 의 2-cycle latency 와 mac_vld_d 의
+                    //    1-cycle 지연을 고려하면 wgt 가 1 acc step 앞서가는 버그였음)
+                    wgt_addr_r <= wgt_base_r;
                     row_idx <= i_row_start;
                     col_idx <= 12'd0;
                     acc_cyc <= 8'd0;
@@ -236,39 +237,22 @@ module conv_top(
 
                 ST_RUN: begin
                     //----------------------------------------------------
-                    // BRAM 1-cycle latency 정렬을 위한 streaming 패턴:
-                    //   - 일반 cycle (acc_cyc < i_acc_len-2): wgt_addr_r++ 진행
-                    //   - acc_cyc == i_acc_len-2 (pre-reset): wgt_addr_r <= wgt_base
-                    //       → 다음 cycle (i_acc_len-1) 의 BRAM 발사값이 wgt_base
-                    //       → 그 다음 cycle (next spatial 1st) wgt_data = entry 0
-                    //   - acc_cyc == i_acc_len-1 (spatial 끝): wgt_addr_r <= wgt_base+1
-                    //       → spatial transition, 자기 자신 cycle 의 wgt_data 는
-                    //         이전 발사 (wgt_base+i_acc_len-1) → entry i_acc_len-1 ✓
-                    //   - i_acc_len == 1: 매 cycle 같은 entry 0 (special-case)
+                    // wgt_addr_r streaming (mac_kern 의 ifm/wgt 정렬 보장):
+                    //   acc_cyc < i_acc_len-1: 일반 → wgt_addr_r++ , acc_cyc++
+                    //   acc_cyc == i_acc_len-1: spatial 끝 → wgt_addr_r <= wgt_base,
+                    //                            acc_cyc <= 0, col_idx + 1
+                    //   acc_len==1 의 경우 i_acc_len-1=0 이므로 매 cycle spatial
+                    //   transition 분기 진입 → wgt 고정·col_idx 매 cycle advance.
                     //----------------------------------------------------
-                    if (i_acc_len == 8'd1) begin
-                        wgt_addr_r <= wgt_base_r;
-                        acc_cyc    <= 8'd0;
-                        if (col_idx == i_ofm_w_half - 1) begin
-                            col_idx <= 12'd0;
-                            if (row_idx != i_ofm_h_half - 1) row_idx <= row_idx + 12'd1;
-                            else                              row_idx <= 12'd0;
-                        end else col_idx <= col_idx + 12'd1;
-                    end
-                    else if (acc_cyc == i_acc_len - 8'd1) begin
+                    if (acc_cyc == i_acc_len - 8'd1) begin
                         // spatial transition
                         acc_cyc    <= 8'd0;
-                        wgt_addr_r <= wgt_base_r + 10'd1;
+                        wgt_addr_r <= wgt_base_r;
                         if (col_idx == i_ofm_w_half - 1) begin
                             col_idx <= 12'd0;
                             if (row_idx != i_ofm_h_half - 1) row_idx <= row_idx + 12'd1;
                             else                              row_idx <= 12'd0;
                         end else col_idx <= col_idx + 12'd1;
-                    end
-                    else if (acc_cyc == i_acc_len - 8'd2) begin
-                        // pre-reset (i_acc_len >= 2)
-                        acc_cyc    <= acc_cyc + 8'd1;
-                        wgt_addr_r <= wgt_base_r;
                     end
                     else begin
                         acc_cyc    <= acc_cyc + 8'd1;
