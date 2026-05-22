@@ -309,6 +309,117 @@ module yolo_engine #(
     localparam [19:0] L4_RP_STORE_WORDS_PER_CIG  = 20'd64; // 16 entry × 4 word
 
     //----------------------------------------------------------------
+    // L6, L7, L8, L9, L10 constants (라우팅 이전, 같은 패턴 반복)
+    //
+    //   per-row IFM byte = W × Ci  → 모두 2048 byte/row (W*Ci 가 상수)
+    //   per-row line_buf entries = W_BLK × ci_groups = 128 (역시 상수)
+    //   conv shift = 6 (scale 0x40 = 64) — L2 이후 모든 layer 동일
+    //----------------------------------------------------------------
+
+    // L6 (CONV3x3, Ci=64, Co=128, 32×32)
+    localparam [11:0] L6_W = 12'd32, L6_H = 12'd32;
+    localparam [11:0] L6_W_HALF = 12'd16, L6_H_HALF = 12'd16;
+    localparam [11:0] L6_W_BLOCKS = 12'd8;
+    localparam [11:0] L6_CO = 12'd128;
+    localparam [7:0]  L6_ACC_LEN = 8'd16;
+    localparam [4:0]  L6_SHIFT = 5'd6;
+    localparam [7:0]  L6_CI_GRPS = 8'd16;
+    localparam [11:0] L6_EIR_PER_ROW = 12'd128;
+    localparam [19:0] L6_BIAS_DMA_WORDS = 20'd128;
+    localparam [19:0] L6_IFM_INIT_WORDS = 20'd1536;
+    localparam [19:0] L6_IFM_NEXT_WORDS = 20'd1024;
+    localparam [19:0] L6_OFM_FIL_WORDS  = 20'd16;
+    localparam [31:0] L6_WGT_BYTE_OFF  = 32'd41984;     // blk_off=656 × 64
+    localparam [31:0] L6_BIAS_BYTE_OFF = 32'd448;       // bias_off=112 × 4
+    localparam [31:0] L6_OFM_BYTE_BASE = 32'h002A0000;
+    localparam [31:0] L6_IFM_BYTE_BASE = 32'h00290000;
+    localparam [11:0] L6_BIAS_ENTRY_BASE = 12'd112;
+    localparam [19:0] L6_WGT_PER_FI_WORDS = 20'd256;    // = 16 × 16
+    localparam [31:0] L6_WGT_PER_FI_BYTES = 32'd1024;
+
+    // L7 (POOL_S2, 128ch, 32 → 16)
+    localparam [7:0]  L7_CO              = 8'd128;
+    localparam [19:0] L7_IFM_WORDS_PER_FI = 20'd256;    // 32×32/4
+    localparam [19:0] L7_OFM_WORDS_PER_FI = 20'd64;     // 16×16/4
+    localparam [31:0] L7_OFM_BYTE_BASE    = 32'h002C0000;
+    localparam [31:0] L6_OFM_FI_BYTE      = 32'd1024;   // 32×32
+    localparam [31:0] L7_OFM_FI_BYTE      = 32'd256;    // 16×16
+
+    // L8 (CONV3x3, Ci=128, Co=256, 16×16)
+    localparam [11:0] L8_W = 12'd16, L8_H = 12'd16;
+    localparam [11:0] L8_W_HALF = 12'd8, L8_H_HALF = 12'd8;
+    localparam [11:0] L8_W_BLOCKS = 12'd4;
+    localparam [11:0] L8_CO = 12'd256;
+    localparam [7:0]  L8_ACC_LEN = 8'd32;
+    localparam [4:0]  L8_SHIFT = 5'd6;
+    localparam [7:0]  L8_CI_GRPS = 8'd32;
+    localparam [11:0] L8_EIR_PER_ROW = 12'd128;
+    localparam [19:0] L8_BIAS_DMA_WORDS = 20'd256;
+    localparam [19:0] L8_IFM_INIT_WORDS = 20'd1536;
+    localparam [19:0] L8_IFM_NEXT_WORDS = 20'd1024;
+    localparam [19:0] L8_OFM_FIL_WORDS  = 20'd8;
+    localparam [31:0] L8_WGT_BYTE_OFF  = 32'd173056;    // blk_off=2704 × 64
+    localparam [31:0] L8_BIAS_BYTE_OFF = 32'd960;       // bias_off=240 × 4
+    localparam [31:0] L8_OFM_BYTE_BASE = 32'h002D0000;
+    localparam [31:0] L8_IFM_BYTE_BASE = 32'h002C8000;
+    localparam [11:0] L8_BIAS_ENTRY_BASE = 12'd240;
+    localparam [19:0] L8_WGT_PER_FI_WORDS = 20'd512;    // = 32 × 16
+    localparam [31:0] L8_WGT_PER_FI_BYTES = 32'd2048;
+
+    // L9 (POOL_S2, 256ch, 16 → 8)
+    localparam [8:0]  L9_CO              = 9'd256;
+    localparam [19:0] L9_IFM_WORDS_PER_FI = 20'd64;     // 16×16/4
+    localparam [19:0] L9_OFM_WORDS_PER_FI = 20'd16;     // 8×8/4
+    localparam [31:0] L9_OFM_BYTE_BASE    = 32'h002E0000;
+    localparam [31:0] L8_OFM_FI_BYTE      = 32'd256;    // 16×16
+    localparam [31:0] L9_OFM_FI_BYTE      = 32'd64;     // 8×8
+
+    // L10 (CONV3x3, Ci=256, Co=512, 8×8)
+    localparam [11:0] L10_W = 12'd8, L10_H = 12'd8;
+    localparam [11:0] L10_W_HALF = 12'd4, L10_H_HALF = 12'd4;
+    localparam [11:0] L10_W_BLOCKS = 12'd2;
+    localparam [11:0] L10_CO = 12'd512;
+    localparam [7:0]  L10_ACC_LEN = 8'd64;
+    localparam [4:0]  L10_SHIFT = 5'd6;
+    localparam [7:0]  L10_CI_GRPS = 8'd64;
+    localparam [11:0] L10_EIR_PER_ROW = 12'd128;
+    localparam [19:0] L10_BIAS_DMA_WORDS = 20'd512;
+    localparam [19:0] L10_IFM_INIT_WORDS = 20'd1536;
+    localparam [19:0] L10_IFM_NEXT_WORDS = 20'd1024;
+    localparam [19:0] L10_OFM_FIL_WORDS  = 20'd4;
+    localparam [31:0] L10_WGT_BYTE_OFF  = 32'd697344;   // blk_off=10896 × 64
+    localparam [31:0] L10_BIAS_BYTE_OFF = 32'd1984;     // bias_off=496 × 4
+    localparam [31:0] L10_OFM_BYTE_BASE = 32'h002E8000;
+    localparam [31:0] L10_IFM_BYTE_BASE = 32'h002E4000;
+    localparam [11:0] L10_BIAS_ENTRY_BASE = 12'd496;
+    localparam [19:0] L10_WGT_PER_FI_WORDS = 20'd1024;  // = 64 × 16
+    localparam [31:0] L10_WGT_PER_FI_BYTES = 32'd4096;
+
+    //----------------------------------------------------------------
+    // REPACK L5→L6, L7→L8, L9→L10 constants
+    //----------------------------------------------------------------
+    // L5→L6: W_BLK=8, ci_g=16, per ch row = 32 byte (8 word × 4)
+    localparam [31:0] L5_OFM_ROW_BYTE        = 32'd32;
+    localparam [31:0] L6_IFM_ROW_BYTE        = 32'd2048;
+    localparam [31:0] L6_IFM_CIG_BYTE_PER_R  = 32'd128;    // 8 entry × 16 byte
+    localparam [19:0] L6_RP_LOAD_WORDS_PER_BURST = 20'd8;
+    localparam [19:0] L6_RP_STORE_WORDS_PER_CIG  = 20'd32; // 8 entry × 4 word
+
+    // L7→L8: W_BLK=4, ci_g=32, per ch row = 16 byte
+    localparam [31:0] L7_OFM_ROW_BYTE        = 32'd16;
+    localparam [31:0] L8_IFM_ROW_BYTE        = 32'd2048;
+    localparam [31:0] L8_IFM_CIG_BYTE_PER_R  = 32'd64;     // 4 entry × 16 byte
+    localparam [19:0] L8_RP_LOAD_WORDS_PER_BURST = 20'd4;
+    localparam [19:0] L8_RP_STORE_WORDS_PER_CIG  = 20'd16; // 4 entry × 4 word
+
+    // L9→L10: W_BLK=2, ci_g=64, per ch row = 8 byte
+    localparam [31:0] L9_OFM_ROW_BYTE        = 32'd8;
+    localparam [31:0] L10_IFM_ROW_BYTE       = 32'd2048;
+    localparam [31:0] L10_IFM_CIG_BYTE_PER_R = 32'd32;     // 2 entry × 16 byte
+    localparam [19:0] L10_RP_LOAD_WORDS_PER_BURST = 20'd2;
+    localparam [19:0] L10_RP_STORE_WORDS_PER_CIG  = 20'd8; // 2 entry × 4 word
+
+    //----------------------------------------------------------------
     // AXI slave (control reg)
     //----------------------------------------------------------------
     wire [31:0] ctrl_reg0, ctrl_reg1, ctrl_reg2, ctrl_reg3;
@@ -402,83 +513,129 @@ module yolo_engine #(
     reg [11:0] fi_r;       // 0..63 (L5) / 0..255 (L8) / ... — full width
 
     //----------------------------------------------------------------
-    // conv_phase_r — 현재 conv FSM 이 누구를 처리하는지 (L0/L2/L4)
-    //   값: 0=L0, 2=L2, 4=L4 (REPACK 진입 시 미리 set)
+    // conv_phase_r — 현재 conv FSM 이 누구를 처리하는지 (L0/L2/L4/L6/L8/L10)
     //----------------------------------------------------------------
     reg [4:0] conv_phase_r;
-    wire is_conv_l0 = (conv_phase_r == 5'd0);
-    wire is_conv_l2 = (conv_phase_r == 5'd2);
-    wire is_conv_l4 = (conv_phase_r == 5'd4);
+    wire is_conv_l0  = (conv_phase_r == 5'd0);
+    wire is_conv_l2  = (conv_phase_r == 5'd2);
+    wire is_conv_l4  = (conv_phase_r == 5'd4);
+    wire is_conv_l6  = (conv_phase_r == 5'd6);
+    wire is_conv_l8  = (conv_phase_r == 5'd8);
+    wire is_conv_l10 = (conv_phase_r == 5'd10);
 
     //----------------------------------------------------------------
-    // pool_phase_r — 현재 pool FSM (L1/L3/L5)
-    //   값: 1=L1, 3=L3, 5=L5
+    // pool_phase_r — 현재 pool FSM (L1/L3/L5/L7/L9)
     //----------------------------------------------------------------
     reg [4:0] pool_phase_r;
     wire is_pool_l1 = (pool_phase_r == 5'd1);
     wire is_pool_l3 = (pool_phase_r == 5'd3);
     wire is_pool_l5 = (pool_phase_r == 5'd5);
+    wire is_pool_l7 = (pool_phase_r == 5'd7);
+    wire is_pool_l9 = (pool_phase_r == 5'd9);
 
     //----------------------------------------------------------------
-    // conv 파라미터 mux (현재 conv 레이어 기준)
+    // conv 파라미터 mux
     //----------------------------------------------------------------
-    wire [11:0] cur_w_blocks   = is_conv_l4 ? L4_W_BLOCKS : is_conv_l2 ? L2_W_BLOCKS : L0_W_BLOCKS;
-    wire [11:0] cur_w          = is_conv_l4 ? L4_W        : is_conv_l2 ? L2_W        : L0_W;
-    wire [11:0] cur_h          = is_conv_l4 ? L4_H        : is_conv_l2 ? L2_H        : L0_H;
-    wire [11:0] cur_w_half     = is_conv_l4 ? L4_W_HALF   : is_conv_l2 ? L2_W_HALF   : L0_W_HALF;
-    wire [11:0] cur_h_half     = is_conv_l4 ? L4_H_HALF   : is_conv_l2 ? L2_H_HALF   : L0_H_HALF;
-    wire [11:0] cur_co         = is_conv_l4 ? L4_CO       : is_conv_l2 ? L2_CO       : L0_CO;
-    wire [7:0]  cur_acc_len    = is_conv_l4 ? L4_ACC_LEN  : is_conv_l2 ? L2_ACC_LEN  : L0_ACC_LEN;
-    wire [4:0]  cur_shift      = is_conv_l4 ? L4_SHIFT    : is_conv_l2 ? L2_SHIFT    : L0_SHIFT;
-    wire [7:0]  cur_ci_grps    = is_conv_l4 ? L4_CI_GRPS  : is_conv_l2 ? L2_CI_GRPS  : L0_CI_GRPS;
-    wire [11:0] cur_eir_per_row= is_conv_l4 ? L4_EIR_PER_ROW : is_conv_l2 ? L2_EIR_PER_ROW : L0_W_BLOCKS;
+    wire [11:0] cur_w_blocks   = is_conv_l10 ? L10_W_BLOCKS : is_conv_l8 ? L8_W_BLOCKS : is_conv_l6 ? L6_W_BLOCKS : is_conv_l4 ? L4_W_BLOCKS : is_conv_l2 ? L2_W_BLOCKS : L0_W_BLOCKS;
+    wire [11:0] cur_w          = is_conv_l10 ? L10_W       : is_conv_l8 ? L8_W       : is_conv_l6 ? L6_W       : is_conv_l4 ? L4_W       : is_conv_l2 ? L2_W       : L0_W;
+    wire [11:0] cur_h          = is_conv_l10 ? L10_H       : is_conv_l8 ? L8_H       : is_conv_l6 ? L6_H       : is_conv_l4 ? L4_H       : is_conv_l2 ? L2_H       : L0_H;
+    wire [11:0] cur_w_half     = is_conv_l10 ? L10_W_HALF  : is_conv_l8 ? L8_W_HALF  : is_conv_l6 ? L6_W_HALF  : is_conv_l4 ? L4_W_HALF  : is_conv_l2 ? L2_W_HALF  : L0_W_HALF;
+    wire [11:0] cur_h_half     = is_conv_l10 ? L10_H_HALF  : is_conv_l8 ? L8_H_HALF  : is_conv_l6 ? L6_H_HALF  : is_conv_l4 ? L4_H_HALF  : is_conv_l2 ? L2_H_HALF  : L0_H_HALF;
+    wire [11:0] cur_co         = is_conv_l10 ? L10_CO      : is_conv_l8 ? L8_CO      : is_conv_l6 ? L6_CO      : is_conv_l4 ? L4_CO      : is_conv_l2 ? L2_CO      : L0_CO;
+    wire [7:0]  cur_acc_len    = is_conv_l10 ? L10_ACC_LEN : is_conv_l8 ? L8_ACC_LEN : is_conv_l6 ? L6_ACC_LEN : is_conv_l4 ? L4_ACC_LEN : is_conv_l2 ? L2_ACC_LEN : L0_ACC_LEN;
+    wire [4:0]  cur_shift      = is_conv_l10 ? L10_SHIFT   : is_conv_l8 ? L8_SHIFT   : is_conv_l6 ? L6_SHIFT   : is_conv_l4 ? L4_SHIFT   : is_conv_l2 ? L2_SHIFT   : L0_SHIFT;
+    wire [7:0]  cur_ci_grps    = is_conv_l10 ? L10_CI_GRPS : is_conv_l8 ? L8_CI_GRPS : is_conv_l6 ? L6_CI_GRPS : is_conv_l4 ? L4_CI_GRPS : is_conv_l2 ? L2_CI_GRPS : L0_CI_GRPS;
+    wire [11:0] cur_eir_per_row= is_conv_l10 ? L10_EIR_PER_ROW : is_conv_l8 ? L8_EIR_PER_ROW : is_conv_l6 ? L6_EIR_PER_ROW : is_conv_l4 ? L4_EIR_PER_ROW : is_conv_l2 ? L2_EIR_PER_ROW : L0_W_BLOCKS;
 
     // per-filter weight DMA size (streaming): acc_len 에 의존
-    wire [19:0] cur_wgt_per_fi_words = is_conv_l4 ? L4_WGT_PER_FI_WORDS : is_conv_l2 ? L2_WGT_PER_FI_WORDS : L0_WGT_PER_FI_WORDS;
-    wire [31:0] cur_wgt_per_fi_bytes = is_conv_l4 ? L4_WGT_PER_FI_BYTES : is_conv_l2 ? L2_WGT_PER_FI_BYTES : L0_WGT_PER_FI_BYTES;
+    wire [19:0] cur_wgt_per_fi_words = is_conv_l10 ? L10_WGT_PER_FI_WORDS : is_conv_l8 ? L8_WGT_PER_FI_WORDS : is_conv_l6 ? L6_WGT_PER_FI_WORDS : is_conv_l4 ? L4_WGT_PER_FI_WORDS : is_conv_l2 ? L2_WGT_PER_FI_WORDS : L0_WGT_PER_FI_WORDS;
+    wire [31:0] cur_wgt_per_fi_bytes = is_conv_l10 ? L10_WGT_PER_FI_BYTES : is_conv_l8 ? L8_WGT_PER_FI_BYTES : is_conv_l6 ? L6_WGT_PER_FI_BYTES : is_conv_l4 ? L4_WGT_PER_FI_BYTES : is_conv_l2 ? L2_WGT_PER_FI_BYTES : L0_WGT_PER_FI_BYTES;
     // 다른 DMA word count (per layer, 1 회)
-    wire [19:0] cur_bias_dma   = is_conv_l4 ? L4_BIAS_DMA_WORDS : is_conv_l2 ? L2_BIAS_DMA_WORDS : BIAS_DMA_WORDS;
-    wire [19:0] cur_ifm_init   = is_conv_l4 ? L4_IFM_INIT_WORDS : is_conv_l2 ? L2_IFM_INIT_WORDS : IFM_INIT_WORDS;
-    wire [19:0] cur_ifm_next   = is_conv_l4 ? L4_IFM_NEXT_WORDS : is_conv_l2 ? L2_IFM_NEXT_WORDS : IFM_NEXT_WORDS;
-    wire [19:0] cur_ofm_fil    = is_conv_l4 ? L4_OFM_FIL_WORDS  : is_conv_l2 ? L2_OFM_FIL_WORDS  : OFM_FIL_WORDS;
+    wire [19:0] cur_bias_dma   = is_conv_l10 ? L10_BIAS_DMA_WORDS : is_conv_l8 ? L8_BIAS_DMA_WORDS : is_conv_l6 ? L6_BIAS_DMA_WORDS : is_conv_l4 ? L4_BIAS_DMA_WORDS : is_conv_l2 ? L2_BIAS_DMA_WORDS : BIAS_DMA_WORDS;
+    wire [19:0] cur_ifm_init   = is_conv_l10 ? L10_IFM_INIT_WORDS : is_conv_l8 ? L8_IFM_INIT_WORDS : is_conv_l6 ? L6_IFM_INIT_WORDS : is_conv_l4 ? L4_IFM_INIT_WORDS : is_conv_l2 ? L2_IFM_INIT_WORDS : IFM_INIT_WORDS;
+    wire [19:0] cur_ifm_next   = is_conv_l10 ? L10_IFM_NEXT_WORDS : is_conv_l8 ? L8_IFM_NEXT_WORDS : is_conv_l6 ? L6_IFM_NEXT_WORDS : is_conv_l4 ? L4_IFM_NEXT_WORDS : is_conv_l2 ? L2_IFM_NEXT_WORDS : IFM_NEXT_WORDS;
+    wire [19:0] cur_ofm_fil    = is_conv_l10 ? L10_OFM_FIL_WORDS  : is_conv_l8 ? L8_OFM_FIL_WORDS  : is_conv_l6 ? L6_OFM_FIL_WORDS  : is_conv_l4 ? L4_OFM_FIL_WORDS  : is_conv_l2 ? L2_OFM_FIL_WORDS  : OFM_FIL_WORDS;
 
     // BRAM bias entry base (wgt 는 streaming 으로 항상 0 사용)
-    wire [11:0] cur_bias_entry_base = is_conv_l4 ? L4_BIAS_ENTRY_BASE :
-                                      is_conv_l2 ? L2_BIAS_ENTRY_BASE : 12'd0;
+    wire [11:0] cur_bias_entry_base = is_conv_l10 ? L10_BIAS_ENTRY_BASE :
+                                      is_conv_l8  ? L8_BIAS_ENTRY_BASE  :
+                                      is_conv_l6  ? L6_BIAS_ENTRY_BASE  :
+                                      is_conv_l4  ? L4_BIAS_ENTRY_BASE  :
+                                      is_conv_l2  ? L2_BIAS_ENTRY_BASE  : 12'd0;
 
     //----------------------------------------------------------------
-    // pool 파라미터 mux (현재 pool 레이어 기준)
+    // pool 파라미터 mux
     //----------------------------------------------------------------
-    wire [5:0]  cur_pool_co            = is_pool_l5 ? L5_CO[5:0] :
-                                         is_pool_l3 ? L3_CO[5:0] : {1'b0, L1_CO};
-    wire [19:0] cur_pool_ifm_per_fi    = is_pool_l5 ? L5_IFM_WORDS_PER_FI :
+    wire [9:0]  cur_pool_co            = is_pool_l9 ? L9_CO :
+                                         is_pool_l7 ? {2'd0, L7_CO} :
+                                         is_pool_l5 ? {3'd0, L5_CO} :
+                                         is_pool_l3 ? {4'd0, L3_CO} : {5'd0, L1_CO};
+    wire [19:0] cur_pool_ifm_per_fi    = is_pool_l9 ? L9_IFM_WORDS_PER_FI :
+                                         is_pool_l7 ? L7_IFM_WORDS_PER_FI :
+                                         is_pool_l5 ? L5_IFM_WORDS_PER_FI :
                                          is_pool_l3 ? L3_IFM_WORDS_PER_FI : L1_IFM_WORDS_PER_FI;
-    wire [19:0] cur_pool_ofm_per_fi    = is_pool_l5 ? L5_OFM_WORDS_PER_FI :
+    wire [19:0] cur_pool_ofm_per_fi    = is_pool_l9 ? L9_OFM_WORDS_PER_FI :
+                                         is_pool_l7 ? L7_OFM_WORDS_PER_FI :
+                                         is_pool_l5 ? L5_OFM_WORDS_PER_FI :
                                          is_pool_l3 ? L3_OFM_WORDS_PER_FI : L1_OFM_WORDS_PER_FI;
-    wire [31:0] cur_pool_ifm_base_byte = is_pool_l5 ? L4_OFM_BYTE_BASE :
-                                         is_pool_l3 ? L2_OFM_BYTE_BASE : 32'd0;  // L1 IFM = L0 OFM @ 0
-    wire [31:0] cur_pool_ofm_base_byte = is_pool_l5 ? L5_OFM_BYTE_BASE :
+    wire [31:0] cur_pool_ifm_base_byte = is_pool_l9 ? L8_OFM_BYTE_BASE :
+                                         is_pool_l7 ? L6_OFM_BYTE_BASE :
+                                         is_pool_l5 ? L4_OFM_BYTE_BASE :
+                                         is_pool_l3 ? L2_OFM_BYTE_BASE : 32'd0;
+    wire [31:0] cur_pool_ofm_base_byte = is_pool_l9 ? L9_OFM_BYTE_BASE :
+                                         is_pool_l7 ? L7_OFM_BYTE_BASE :
+                                         is_pool_l5 ? L5_OFM_BYTE_BASE :
                                          is_pool_l3 ? L3_OFM_BYTE_BASE : L1_OFM_BYTE_BASE;
-    wire [31:0] cur_pool_ifm_fi_byte   = is_pool_l5 ? L4_OFM_FI_BYTE :
+    wire [31:0] cur_pool_ifm_fi_byte   = is_pool_l9 ? L8_OFM_FI_BYTE :
+                                         is_pool_l7 ? L6_OFM_FI_BYTE :
+                                         is_pool_l5 ? L4_OFM_FI_BYTE :
                                          is_pool_l3 ? L2_OFM_FI_BYTE : L0_OFM_FI_BYTE;
-    wire [31:0] cur_pool_ofm_fi_byte   = is_pool_l5 ? L5_OFM_FI_BYTE :
+    wire [31:0] cur_pool_ofm_fi_byte   = is_pool_l9 ? L9_OFM_FI_BYTE :
+                                         is_pool_l7 ? L7_OFM_FI_BYTE :
+                                         is_pool_l5 ? L5_OFM_FI_BYTE :
                                          is_pool_l3 ? L3_OFM_FI_BYTE : L1_OFM_FI_BYTE;
 
     //----------------------------------------------------------------
-    // REPACK 파라미터 mux (현재 진입할 conv 의 phase 기준)
-    //   conv_phase_r 는 REPACK 시작 직전에 set됨.
+    // REPACK 파라미터 mux (conv_phase_r 기준)
     //----------------------------------------------------------------
-    wire [31:0] cur_rp_src_base_byte   = is_conv_l4 ? L3_OFM_BYTE_BASE : L1_OFM_BYTE_BASE;
-    wire [31:0] cur_rp_dst_base_byte   = is_conv_l4 ? L4_IFM_BYTE_BASE : L2_IFM_BYTE_BASE;
-    wire [31:0] cur_rp_src_row_byte    = is_conv_l4 ? L3_OFM_ROW_BYTE  : L1_OFM_ROW_BYTE;
-    wire [31:0] cur_rp_src_ch_byte     = is_conv_l4 ? L3_OFM_FI_BYTE   : L1_OFM_FI_BYTE;
-    wire [31:0] cur_rp_dst_row_byte    = is_conv_l4 ? L4_IFM_ROW_BYTE  : L2_IFM_ROW_BYTE;
-    wire [31:0] cur_rp_dst_cig_byte    = is_conv_l4 ? L4_IFM_CIG_BYTE_PER_R : L2_IFM_CIG_BYTE_PER_R;
-    wire [19:0] cur_rp_load_words      = is_conv_l4 ? L4_RP_LOAD_WORDS_PER_BURST : REPACK_LOAD_WORDS_PER_BURST;
-    wire [19:0] cur_rp_store_words     = is_conv_l4 ? L4_RP_STORE_WORDS_PER_CIG  : REPACK_STORE_WORDS_PER_CIG;
-    wire [11:0] cur_rp_total_rows      = is_conv_l4 ? L4_H[11:0]       : L2_H[11:0];   // = layer height
-    wire [2:0]  cur_rp_total_cig_minus1= is_conv_l4 ? 3'd7             : 3'd3;          // ci_groups - 1
-    wire [4:0]  cur_rp_w_blocks_minus1 = is_conv_l4 ? 5'd15            : 5'd31;         // W_BLK - 1
+    wire [31:0] cur_rp_src_base_byte   = is_conv_l10 ? L9_OFM_BYTE_BASE :
+                                         is_conv_l8  ? L7_OFM_BYTE_BASE :
+                                         is_conv_l6  ? L5_OFM_BYTE_BASE :
+                                         is_conv_l4  ? L3_OFM_BYTE_BASE : L1_OFM_BYTE_BASE;
+    wire [31:0] cur_rp_dst_base_byte   = is_conv_l10 ? L10_IFM_BYTE_BASE :
+                                         is_conv_l8  ? L8_IFM_BYTE_BASE  :
+                                         is_conv_l6  ? L6_IFM_BYTE_BASE  :
+                                         is_conv_l4  ? L4_IFM_BYTE_BASE  : L2_IFM_BYTE_BASE;
+    wire [31:0] cur_rp_src_row_byte    = is_conv_l10 ? L9_OFM_ROW_BYTE :
+                                         is_conv_l8  ? L7_OFM_ROW_BYTE :
+                                         is_conv_l6  ? L5_OFM_ROW_BYTE :
+                                         is_conv_l4  ? L3_OFM_ROW_BYTE : L1_OFM_ROW_BYTE;
+    wire [31:0] cur_rp_src_ch_byte     = is_conv_l10 ? L9_OFM_FI_BYTE :
+                                         is_conv_l8  ? L7_OFM_FI_BYTE :
+                                         is_conv_l6  ? L5_OFM_FI_BYTE :
+                                         is_conv_l4  ? L3_OFM_FI_BYTE : L1_OFM_FI_BYTE;
+    wire [31:0] cur_rp_dst_row_byte    = is_conv_l10 ? L10_IFM_ROW_BYTE :
+                                         is_conv_l8  ? L8_IFM_ROW_BYTE  :
+                                         is_conv_l6  ? L6_IFM_ROW_BYTE  :
+                                         is_conv_l4  ? L4_IFM_ROW_BYTE  : L2_IFM_ROW_BYTE;
+    wire [31:0] cur_rp_dst_cig_byte    = is_conv_l10 ? L10_IFM_CIG_BYTE_PER_R :
+                                         is_conv_l8  ? L8_IFM_CIG_BYTE_PER_R  :
+                                         is_conv_l6  ? L6_IFM_CIG_BYTE_PER_R  :
+                                         is_conv_l4  ? L4_IFM_CIG_BYTE_PER_R  : L2_IFM_CIG_BYTE_PER_R;
+    wire [19:0] cur_rp_load_words      = is_conv_l10 ? L10_RP_LOAD_WORDS_PER_BURST :
+                                         is_conv_l8  ? L8_RP_LOAD_WORDS_PER_BURST  :
+                                         is_conv_l6  ? L6_RP_LOAD_WORDS_PER_BURST  :
+                                         is_conv_l4  ? L4_RP_LOAD_WORDS_PER_BURST  : REPACK_LOAD_WORDS_PER_BURST;
+    wire [19:0] cur_rp_store_words     = is_conv_l10 ? L10_RP_STORE_WORDS_PER_CIG :
+                                         is_conv_l8  ? L8_RP_STORE_WORDS_PER_CIG  :
+                                         is_conv_l6  ? L6_RP_STORE_WORDS_PER_CIG  :
+                                         is_conv_l4  ? L4_RP_STORE_WORDS_PER_CIG  : REPACK_STORE_WORDS_PER_CIG;
+    // 다음 conv 의 H = REPACK 처리할 row 수
+    wire [11:0] cur_rp_total_rows      = is_conv_l10 ? L10_H : is_conv_l8 ? L8_H : is_conv_l6 ? L6_H : is_conv_l4 ? L4_H : L2_H;
+    // ci_groups - 1   (L2:3, L4:7, L6:15, L8:31, L10:63)
+    wire [5:0]  cur_rp_total_cig_minus1= is_conv_l10 ? 6'd63 : is_conv_l8 ? 6'd31 : is_conv_l6 ? 6'd15 : is_conv_l4 ? 6'd7 : 6'd3;
+    // W_BLK - 1   (L2:31, L4:15, L6:7, L8:3, L10:1)
+    wire [4:0]  cur_rp_w_blocks_minus1 = is_conv_l10 ? 5'd1 : is_conv_l8 ? 5'd3 : is_conv_l6 ? 5'd7 : is_conv_l4 ? 5'd15 : 5'd31;
 
     //----------------------------------------------------------------
     // DMA target enum (for asm/counter decoding)
@@ -882,29 +1039,20 @@ module yolo_engine #(
         end
     end
 
-    // GEN 의 Port B read addr (phase 0..3) — scratch_a 의 ch_l × W_BLK + col_b
-    //   ch_l = phase[1:0]
-    //   L1→L2: W_BLK=32, addr = {ch_l, col_b[4:0]}  (7-bit)
-    //   L3→L4: W_BLK=16, addr = {ch_l, col_b[3:0]}  (6-bit)
-    wire [15:0] rp_gen_rd_addr = is_conv_l4 ?
-        (SCRATCH_A_BASE + {10'd0, rp_gen_phase_r[1:0], rp_gen_cb_r[3:0]}) :
-        (SCRATCH_A_BASE + {9'd0,  rp_gen_phase_r[1:0], rp_gen_cb_r[4:0]});
+    // GEN 의 Port B read addr — scratch_a 의 ch_l × W_BLK + col_b
+    //   ch_l = phase[1:0], W_BLK 은 layer 별 (= cur_rp_load_words)
+    wire [15:0] rp_gen_rd_addr = SCRATCH_A_BASE +
+        ({14'd0, rp_gen_phase_r[1:0]} * cur_rp_load_words[15:0]) +
+        {11'd0, rp_gen_cb_r[4:0]};
     wire        rp_gen_rd_en   = rp_gen_phase && (rp_gen_phase_r <= 4'd3);
 
-    // GEN 의 Port A write — phase 5..8 에서 transposed word 출력
-    //   col_l = phase - 5  (0..3)
-    //   addr  = SCRATCH_B_BASE + col_b*4 + col_l
+    // GEN 의 Port A write — col_b × 4 + col_l (= {col_b, col_l})
     wire [1:0] rp_gen_col_l =
         (rp_gen_phase_r == 4'd5) ? 2'd0 :
         (rp_gen_phase_r == 4'd6) ? 2'd1 :
         (rp_gen_phase_r == 4'd7) ? 2'd2 :
         (rp_gen_phase_r == 4'd8) ? 2'd3 : 2'd0;
-
-    // L1→L2: col_b[4:0]*4 + col_l = {col_b[4:0], col_l}
-    // L3→L4: col_b[3:0]*4 + col_l = {col_b[3:0], col_l}
-    wire [15:0] rp_gen_wr_addr = is_conv_l4 ?
-        (SCRATCH_B_BASE + {10'd0, rp_gen_cb_r[3:0], rp_gen_col_l}) :
-        (SCRATCH_B_BASE + {9'd0,  rp_gen_cb_r[4:0], rp_gen_col_l});
+    wire [15:0] rp_gen_wr_addr = SCRATCH_B_BASE + {9'd0, rp_gen_cb_r[4:0], rp_gen_col_l};
     wire [31:0] rp_gen_wr_data = {
         ch_word_3_r[rp_gen_col_l*8 +: 8],
         ch_word_2_r[rp_gen_col_l*8 +: 8],
@@ -954,18 +1102,22 @@ module yolo_engine #(
     //----------------------------------------------------------------
     // DRAM 주소 계산
     //----------------------------------------------------------------
-    // 현재 layer 의 weight base byte (DRAM):
-    //   L0: 0, L2: 1024, L4: 9216
+    // 현재 layer 의 weight base byte (DRAM)
     wire [31:0] cur_wgt_layer_base = dram_wgt_base +
-                                     (is_conv_l4 ? L4_WGT_BYTE_OFF :
-                                      is_conv_l2 ? L2_WGT_BYTE_OFF : 32'd0);
+                                     (is_conv_l10 ? L10_WGT_BYTE_OFF :
+                                      is_conv_l8  ? L8_WGT_BYTE_OFF  :
+                                      is_conv_l6  ? L6_WGT_BYTE_OFF  :
+                                      is_conv_l4  ? L4_WGT_BYTE_OFF  :
+                                      is_conv_l2  ? L2_WGT_BYTE_OFF  : 32'd0);
     // per-filter weight DRAM byte addr = layer_base + fi × per_fi_bytes
     wire [31:0] addr_wgt_fi = cur_wgt_layer_base + ({20'd0, fi_r} * cur_wgt_per_fi_bytes);
 
     // Bias base byte offset (within bias DRAM region)
-    //   L0: 0, L2: 64, L4: 192
-    wire [31:0] cur_bias_off = is_conv_l4 ? L4_BIAS_BYTE_OFF :
-                               is_conv_l2 ? L2_BIAS_BYTE_OFF : 32'd0;
+    wire [31:0] cur_bias_off = is_conv_l10 ? L10_BIAS_BYTE_OFF :
+                               is_conv_l8  ? L8_BIAS_BYTE_OFF  :
+                               is_conv_l6  ? L6_BIAS_BYTE_OFF  :
+                               is_conv_l4  ? L4_BIAS_BYTE_OFF  :
+                               is_conv_l2  ? L2_BIAS_BYTE_OFF  : 32'd0;
     wire [31:0] addr_bias = dram_wgt_base + 32'h00A00000 + cur_bias_off;
 
     // IFM row stride byte:
@@ -974,9 +1126,12 @@ module yolo_engine #(
     //   L4: 64*32  = 2048 byte/row (shift 11)
     //   (L6+ 도 모두 2048 byte/row — W*Ci 가 상수)
     wire [11:0] ifm_first_row_for_rb = (rb_r == 12'd0) ? 12'd0 : ({rb_r[10:0], 1'b0}) + 12'd1;
-    wire [31:0] cur_ifm_base = is_conv_l4 ? (dram_ofm_base + L4_IFM_BYTE_BASE) :
-                               is_conv_l2 ? (dram_ofm_base + L2_IFM_BYTE_BASE) :
-                                            dram_ifm_base;
+    wire [31:0] cur_ifm_base = is_conv_l10 ? (dram_ofm_base + L10_IFM_BYTE_BASE) :
+                               is_conv_l8  ? (dram_ofm_base + L8_IFM_BYTE_BASE)  :
+                               is_conv_l6  ? (dram_ofm_base + L6_IFM_BYTE_BASE)  :
+                               is_conv_l4  ? (dram_ofm_base + L4_IFM_BYTE_BASE)  :
+                               is_conv_l2  ? (dram_ofm_base + L2_IFM_BYTE_BASE)  :
+                                             dram_ifm_base;
     wire [31:0] addr_ifm_byte = cur_ifm_base +
                                 (is_conv_l0 ?
                                    ({20'd0, ifm_first_row_for_rb} << 10) :
@@ -990,18 +1145,30 @@ module yolo_engine #(
     //     fi*4096 word (W_HALF^2=4096) × 4 = 16384 byte = fi << 14
     //     rb*64   word (W_HALF=64) × 4 = 256 byte = rb << 8
     // OFM per (rb, fi) DRAM byte addr
-    //   L0: ofm_base                                 + fi*65536 + rb*512
-    //   L2: ofm_base + L2_OFM_BYTE_BASE              + fi*16384 + rb*256
-    //   L4: ofm_base + L4_OFM_BYTE_BASE              + fi*4096  + rb*128
-    wire [31:0] cur_ofm_layer_base = is_conv_l4 ? (dram_ofm_base + L4_OFM_BYTE_BASE) :
-                                     is_conv_l2 ? (dram_ofm_base + L2_OFM_BYTE_BASE) :
-                                                  dram_ofm_base;
-    // per fi byte = (W_HALF*H_HALF*4)  =  L0:65536, L2:16384, L4:4096
-    wire [31:0] cur_ofm_fi_byte = is_conv_l4 ? 32'd4096 :
-                                  is_conv_l2 ? 32'd16384 : 32'd65536;
-    // per rb byte = W_HALF*4          =  L0:512,   L2:256,   L4:128
-    wire [31:0] cur_ofm_rb_byte = is_conv_l4 ? 32'd128 :
-                                  is_conv_l2 ? 32'd256 : 32'd512;
+    //   per fi byte = H_HALF × W_HALF × 4
+    //   per rb byte = W_HALF × 4
+    //     L0:  65536, 512
+    //     L2:  16384, 256
+    //     L4:   4096, 128
+    //     L6:   1024,  64
+    //     L8:    256,  32
+    //     L10:    64,  16
+    wire [31:0] cur_ofm_layer_base = is_conv_l10 ? (dram_ofm_base + L10_OFM_BYTE_BASE) :
+                                     is_conv_l8  ? (dram_ofm_base + L8_OFM_BYTE_BASE)  :
+                                     is_conv_l6  ? (dram_ofm_base + L6_OFM_BYTE_BASE)  :
+                                     is_conv_l4  ? (dram_ofm_base + L4_OFM_BYTE_BASE)  :
+                                     is_conv_l2  ? (dram_ofm_base + L2_OFM_BYTE_BASE)  :
+                                                   dram_ofm_base;
+    wire [31:0] cur_ofm_fi_byte = is_conv_l10 ? 32'd64    :
+                                  is_conv_l8  ? 32'd256   :
+                                  is_conv_l6  ? 32'd1024  :
+                                  is_conv_l4  ? 32'd4096  :
+                                  is_conv_l2  ? 32'd16384 : 32'd65536;
+    wire [31:0] cur_ofm_rb_byte = is_conv_l10 ? 32'd16    :
+                                  is_conv_l8  ? 32'd32    :
+                                  is_conv_l6  ? 32'd64    :
+                                  is_conv_l4  ? 32'd128   :
+                                  is_conv_l2  ? 32'd256   : 32'd512;
     wire [31:0] addr_ofm_byte = cur_ofm_layer_base +
                                 ({20'd0, fi_r} * cur_ofm_fi_byte) +
                                 ({20'd0, rb_r} * cur_ofm_rb_byte);
@@ -1015,25 +1182,23 @@ module yolo_engine #(
 
     //----------------------------------------------------------------
     // REPACK 주소 (row r, ci_g, ch_l within group)
+    //   rp_cig_r 6-bit: L9→L10 (ci_g 0..63) 까지 cover
+    //   rp_chfull 8-bit: max = ci_g*4 + ch_l = 63*4+3 = 255
     //----------------------------------------------------------------
-    reg [11:0] rp_row_r;     // 0..127 (L2 진입) / 0..63 (L4 진입)
-    reg [3:0]  rp_cig_r;     // 0..7 (L4 ci_g 까지 cover)
-    reg [2:0]  rp_chl_r;     // 0..3 (ch within ci_group)
+    reg [11:0] rp_row_r;
+    reg [5:0]  rp_cig_r;
+    reg [2:0]  rp_chl_r;
 
-    // REPACK Load 주소: 이전 pool 의 OFM[ch_full=cig*4+chl, row=rp_row, col=0..(W_BLK-1)] 한 row
-    //   byte_addr = src_base + ch_full*src_ch_byte + rp_row*src_row_byte
-    wire [4:0]  rp_chfull = {rp_cig_r[2:0], rp_chl_r[1:0]};
+    wire [7:0]  rp_chfull = {rp_cig_r[5:0], rp_chl_r[1:0]};
     wire [31:0] addr_rp_load_byte =
         dram_ofm_base + cur_rp_src_base_byte +
-        ({11'd0, rp_chfull} * cur_rp_src_ch_byte) +
-        ({20'd0, rp_row_r} * cur_rp_src_row_byte);
+        ({24'd0, rp_chfull} * cur_rp_src_ch_byte) +
+        ({20'd0, rp_row_r}  * cur_rp_src_row_byte);
 
-    // REPACK Store 주소: 다음 conv 의 IFM (NHWC packed)
-    //   byte_addr = dst_base + rp_row*dst_row_byte + rp_cig*dst_cig_byte
     wire [31:0] addr_rp_store_byte =
         dram_ofm_base + cur_rp_dst_base_byte +
         ({20'd0, rp_row_r} * cur_rp_dst_row_byte) +
-        ({28'd0, rp_cig_r} * cur_rp_dst_cig_byte);
+        ({26'd0, rp_cig_r} * cur_rp_dst_cig_byte);
 
     //----------------------------------------------------------------
     // Main FSM
@@ -1063,7 +1228,7 @@ module yolo_engine #(
             pool_start_r            <= 1'b0;
             dma_ifm_row_start_r     <= 12'd0;
             rp_row_r                <= 12'd0;
-            rp_cig_r                <= 4'd0;
+            rp_cig_r                <= 6'd0;
             rp_chl_r                <= 3'd0;
             network_done_r          <= 1'b0;
         end else begin
@@ -1177,25 +1342,33 @@ module yolo_engine #(
                 end
 
                 //------------------------------------------------
-                // Conv 완료 → pool 진입
-                //   L0 (cp=0) → L1 pool   (pool_phase_r=1, layer_idx=1)
-                //   L2 (cp=2) → L3 pool   (pool_phase_r=3, layer_idx=3)
-                //   L4 (cp=4) → L5 pool   (pool_phase_r=5, layer_idx=5)
+                // Conv 완료 → 다음 pool 진입
+                //   cp=0  → L1 pool   (layer_idx=1, pp=1)
+                //   cp=2  → L3 pool   (layer_idx=3, pp=3)
+                //   cp=4  → L5 pool   (layer_idx=5, pp=5)
+                //   cp=6  → L7 pool   (layer_idx=7, pp=7)
+                //   cp=8  → L9 pool   (layer_idx=9, pp=9)
+                //   cp=10 → 최종 종료 (layer_idx=11)
                 //------------------------------------------------
                 S_CONV_DONE: begin
                     fi_r         <= 12'd0;
                     dma_target_r <= DMA_TGT_NONE;
-                    state_r      <= S_L1_FI_LOAD;    // pool 진입 (generic)
-                    if (conv_phase_r == 5'd0) begin
-                        layer_idx    <= 5'd1;
-                        pool_phase_r <= 5'd1;
-                    end else if (conv_phase_r == 5'd2) begin
-                        layer_idx    <= 5'd3;
-                        pool_phase_r <= 5'd3;
+                    if (conv_phase_r == 5'd10) begin
+                        // L10 완료 → 최종 종료
+                        layer_idx      <= 5'd11;
+                        network_done_r <= 1'b1;
+                        state_r        <= S_DONE;
                     end else begin
-                        // conv_phase_r == 5'd4 → L5 pool
-                        layer_idx    <= 5'd5;
-                        pool_phase_r <= 5'd5;
+                        state_r      <= S_L1_FI_LOAD;
+                        case (conv_phase_r)
+                            5'd0: begin layer_idx <= 5'd1; pool_phase_r <= 5'd1; end
+                            5'd2: begin layer_idx <= 5'd3; pool_phase_r <= 5'd3; end
+                            5'd4: begin layer_idx <= 5'd5; pool_phase_r <= 5'd5; end
+                            5'd6: begin layer_idx <= 5'd7; pool_phase_r <= 5'd7; end
+                            default: begin   // cp == 5'd8
+                                layer_idx <= 5'd9; pool_phase_r <= 5'd9;
+                            end
+                        endcase
                     end
                 end
 
@@ -1235,27 +1408,21 @@ module yolo_engine #(
                 end
 
                 S_L1_NEXT_FI: begin
-                    if (fi_r == {6'd0, cur_pool_co} - 12'd1) begin
-                        // Pool 완료 → 다음 phase 분기
+                    if (fi_r == {2'd0, cur_pool_co} - 12'd1) begin
+                        // Pool 완료 → REPACK 진입 (다음 conv 의 IFM 생성)
                         rp_row_r  <= 12'd0;
-                        rp_cig_r  <= 4'd0;
+                        rp_cig_r  <= 6'd0;
                         rp_chl_r  <= 3'd0;
-                        if (pool_phase_r == 5'd1) begin
-                            // L1 완료 → REPACK to L2
-                            layer_idx    <= 5'd2;
-                            conv_phase_r <= 5'd2;
-                            state_r      <= S_RP_LOAD;
-                        end else if (pool_phase_r == 5'd3) begin
-                            // L3 완료 → REPACK to L4
-                            layer_idx    <= 5'd4;
-                            conv_phase_r <= 5'd4;
-                            state_r      <= S_RP_LOAD;
-                        end else begin
-                            // L5 완료 → 최종 종료
-                            layer_idx      <= 5'd6;
-                            network_done_r <= 1'b1;
-                            state_r        <= S_DONE;
-                        end
+                        state_r   <= S_RP_LOAD;
+                        case (pool_phase_r)
+                            5'd1: begin layer_idx <= 5'd2;  conv_phase_r <= 5'd2;  end
+                            5'd3: begin layer_idx <= 5'd4;  conv_phase_r <= 5'd4;  end
+                            5'd5: begin layer_idx <= 5'd6;  conv_phase_r <= 5'd6;  end
+                            5'd7: begin layer_idx <= 5'd8;  conv_phase_r <= 5'd8;  end
+                            default: begin   // pp == 5'd9
+                                layer_idx <= 5'd10; conv_phase_r <= 5'd10;
+                            end
+                        endcase
                     end else begin
                         fi_r    <= fi_r + 12'd1;
                         state_r <= S_L1_FI_LOAD;
@@ -1269,10 +1436,8 @@ module yolo_engine #(
                 //------------------------------------------------
                 S_RP_LOAD: begin
                     dma_target_r           <= DMA_TGT_L1_IFM;
-                    // ch_l × W_BLK in scratch_a (L1→L2: ch_l*32, L3→L4: ch_l*16)
-                    dpram_load_addr_init_r <= is_conv_l4 ?
-                                              ({12'd0, rp_chl_r[1:0]} << 4) :
-                                              ({11'd0, rp_chl_r[1:0]} << 5);
+                    // scratch_a 의 ch_l 슬롯 = ch_l × W_BLK
+                    dpram_load_addr_init_r <= ({14'd0, rp_chl_r[1:0]} * cur_rp_load_words[15:0]);
                     dma_rd_num_trans       <= cur_rp_load_words;
                     dma_rd_start_addr      <= addr_rp_load_byte;
                     dma_rd_start           <= 1'b1;
@@ -1307,8 +1472,8 @@ module yolo_engine #(
                 end
 
                 S_RP_NEXT_CIG: begin
-                    if (rp_cig_r[2:0] == cur_rp_total_cig_minus1) begin
-                        rp_cig_r <= 4'd0;
+                    if (rp_cig_r == cur_rp_total_cig_minus1) begin
+                        rp_cig_r <= 6'd0;
                         if (rp_row_r == cur_rp_total_rows - 12'd1) begin
                             // REPACK 완료 → 다음 conv 진입 (streaming: bias 부터)
                             rb_r    <= 12'd0;
@@ -1319,7 +1484,7 @@ module yolo_engine #(
                             state_r  <= S_RP_LOAD;
                         end
                     end else begin
-                        rp_cig_r <= rp_cig_r + 4'd1;
+                        rp_cig_r <= rp_cig_r + 6'd1;
                         state_r  <= S_RP_LOAD;
                     end
                 end
