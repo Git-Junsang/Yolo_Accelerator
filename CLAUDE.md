@@ -41,7 +41,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Phase 3 | MicroBlaze + UART + DDR2 통합 | 대기 |
 | Phase 4 | 비트스트림 + 보드 데모 + 측정 | 대기 |
 
-현재 진행 상태는 항상 `HANDOFF.md` 와 `.claude/projects/c--AIX-Project/memory/project_current_state.md` 를 확인.
+현재 진행 상태는 항상 `.claude/projects/c--AIX-Project/memory/project_current_state.md` 를 확인.
 
 ---
 

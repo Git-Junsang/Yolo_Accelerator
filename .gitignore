@@ -40,3 +40,9 @@ yolohw/sim/
 
 # 소프트 삭제 보관함
 .recycle_bin/
+
+# 시뮬레이션 로그 (Vivado 출력)
+simulation_log.txt
+
+# 대회 측 원본 RTL (참조용, 빌드 비포함)
+src_original/
