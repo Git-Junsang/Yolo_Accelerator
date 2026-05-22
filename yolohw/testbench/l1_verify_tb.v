@@ -1,6 +1,10 @@
 `timescale 1ns / 1ns
 //----------------------------------------------------------------------
-// l1_verify_tb.v — Layer 1 (POOL_S2) 2-단계 통합 검증 TB
+// l1_verify_tb.v — L1 (POOL_S2) 2-단계 통합 검증 TB (streaming engine)
+//
+// L1 자체는 weight 없으므로 streaming 영향 없음. L0 (chain Phase B) 가
+// streaming 으로 동작하는 것만 추가됨. L1 의 FSM state numbering (13..19) 은
+// streaming refactor 후에도 그대로 유지됨.
 //
 // 한 번의 시뮬레이션 안에서 다음 2 단계가 순차적으로 진행됩니다.
 //

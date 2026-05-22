@@ -1,14 +1,18 @@
 `timescale 1ns / 1ns
 //----------------------------------------------------------------+
-// l0_verify_tb.v — L0 verification (streaming weight 모드)
+// l0_nonstreaming_verify_tb.v — L0 verification (non-streaming weight load)
+// (archive: weight 를 layer 시작에 한 번에 적재하던 시절의 TB. streaming
+//  refactor 이전의 yolo_engine 과만 build/run 가능.)
 //
-// streaming 엔진에 맞춘 L0 검증. ap_start 만으로 자연 진행.
-// L0 의 weight 는 매 filter 시작 직전에 per-fi DMA (16 word) 적재됨.
+// 목표 — 현재 L0 mismatch 패턴 (fi=1/cb=0 의 pix_00↔pix_10 swap) 의
+//        원인을 좁히기 위해, 이전 TB와 다른 접근으로 다시 검증.
 //
-// 검증 흐름:
-//   1. ap_start → layer_idx 0 → 1 까지 진행
-//   2. L0 완료 시점에 DRAM[OFM] ↔ CONV00_output.hex 비교
-//   3. mismatch 카운트 + 첫 8개 print
+// 이전 TB 와 다른 점:
+//   1. layer_idx / top_state 강제 force 없이 ap_start 만으로 자연 진행
+//   2. 비교 시 fi / rb / cb / sub_h / sub_w 5축 분포 모두 카운트
+//      (이전: first 16 만 print → 패턴 파악 한계)
+//   3. layer_idx == 1 시점에 L0 완료로 간주, L1/L2 진행 전에 비교 → sim 시간 절약
+//   4. dpram (u_ofm.ram) 스냅샷 옵션 — 첫 mismatch 가 발견된 rb 직후 dump
 //
 // 검증 흐름:
 //   1. .mem 적재 (wgt/bias/ifm) + golden hex
@@ -19,7 +23,7 @@
 //----------------------------------------------------------------+
 `include "user_define_h.v"
 
-module l0_verify_tb;
+module l0_nonstreaming_verify_tb;
 
 `ifdef FPGA
     initial begin

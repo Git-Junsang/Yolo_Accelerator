@@ -212,34 +212,38 @@ module yolo_engine #(
     // 한 row 의 line_buf 총 entry = W_BLK × ci_groups = 32 × 4 = 128
     localparam [11:0] L2_EIR_PER_ROW = 12'd128;
 
-    // L2 DMA word counts
-    //   weight: 32 fi × 4 acc_len × 16 word/entry = 2048 word
-    //   bias  : 32 fi
-    //   IFM rb=0: 3 rows × (128 entry × 4 word/entry) = 1536 word
-    //   IFM rb≥1: 2 rows × 512 = 1024 word
-    //   OFM per (rb, fi): W_half = 64 word
-    localparam [19:0] L2_WGT_DMA_WORDS  = 20'd2048;
+    // ── Streaming weight 모드 (L0/L2 공용) ──────────────────────────
+    //   weight 는 layer 시작에 한번 적재하지 않고, 매 filter 마다 fresh DMA.
+    //   - per-filter DMA 양: acc_len × 16 word (acc_len blocks × 4 word/slot × 4 slot/block)
+    //     L0 (acc_len=1): 16 word
+    //     L2 (acc_len=4): 64 word
+    //   - BRAM 의 wgt write 시작 entry: 항상 0 (모든 layer/filter 공유)
+    //   - conv_top.i_wgt_base = 0 (stream 모드)
+    //   - conv_top.i_stream_wgt_mode = 1 (filter 전환 시 wgt_base 동결)
+    //
+    //   L2 bias / IFM / OFM DMA 사이즈는 non-streaming 시와 동일.
     localparam [19:0] L2_BIAS_DMA_WORDS = 20'd32;
     localparam [19:0] L2_IFM_INIT_WORDS = 20'd1536;
     localparam [19:0] L2_IFM_NEXT_WORDS = 20'd1024;
     localparam [19:0] L2_OFM_FIL_WORDS  = 20'd64;
 
-    // L2 weight 시작 위치: gen_sim_dram.py 의 blk_off=16 (L0 는 blk_off=0)
-    //   → byte offset = 16 × 64 = 1024 byte = 256 word
+    // L2 weight 시작 위치 (DRAM 기준): gen_sim_dram.py 의 blk_off=16
+    //   byte offset = 16 × 64 = 1024
     localparam [31:0] L2_WGT_BYTE_OFF  = 32'd1024;
-    // L2 bias 시작 위치: L0 의 16 filter 뒤 → byte offset 16 × 4 = 64
+    // L2 bias 시작 위치 (L0 의 16 filter 뒤): byte 16 × 4 = 64
     localparam [31:0] L2_BIAS_BYTE_OFF = 32'd64;
     // L2 OFM DRAM byte base (offset from dram_ofm_base)
     localparam [31:0] L2_OFM_BYTE_BASE = 32'h00180000;
-    // L2 wgt entry base
-    //   Weight BRAM 비대칭: write 측 72-bit (4096 depth), read 측 288-bit (1024 depth)
-    //                       read addr K ↔ write addr {K, 2'b00..11}
-    //   L0 wgt = 16 fi × 1 acc_len = 16 READ entry = 64 WRITE entry
-    //   L2 의 READ base = 16, WRITE base = 64
-    localparam [11:0] L2_WGT_WR_ENTRY_BASE = 12'd64;   // DMA write counter init
-    localparam [9:0]  L2_WGT_RD_ENTRY_BASE = 10'd16;   // conv_top i_wgt_base
-    // Bias 는 write/read 같은 단위 (32-bit), L2 base = 16
+    // L2 bias BRAM entry base (L0 의 16 filter 뒤)
     localparam [11:0] L2_BIAS_ENTRY_BASE = 12'd16;
+
+    // 공통: per-filter weight DMA word count = acc_len × 16
+    //   acc_len=1 → 16 word, acc_len=4 → 64 word
+    // 공통: per-filter weight 바이트 stride = acc_len × 64
+    localparam [19:0] L0_WGT_PER_FI_WORDS = 20'd16;    // = 1 × 16
+    localparam [19:0] L2_WGT_PER_FI_WORDS = 20'd64;    // = 4 × 16
+    localparam [31:0] L0_WGT_PER_FI_BYTES = 32'd64;    // = 16 × 4
+    localparam [31:0] L2_WGT_PER_FI_BYTES = 32'd256;   // = 64 × 4
 
     //----------------------------------------------------------------
     // AXI slave (control reg)
@@ -282,20 +286,28 @@ module yolo_engine #(
     reg [4:0] layer_idx;
 
     //----------------------------------------------------------------
-    // FSM 상태
-    //   0..11   : conv FSM 공통 (L0, L2 시간 공유 — conv_phase_r 로 구별)
-    //   12      : S_CONV_DONE (다음 phase 분기)
-    //   13..19  : L1 (POOL_S2) FSM
-    //   20..27  : REPACK FSM
-    //   28      : S_DONE (network end)
+    // FSM 상태 (streaming weight 모드)
+    //   weight 는 매 filter 직전에 per-fi DMA. bias 만 layer 시작 시 일괄.
+    //
+    //   0       : S_IDLE
+    //   1..2    : S_LOAD_BIAS / WAIT  (layer 시작 시 한 번)
+    //   3..4    : S_RB_DMA_IFM / WAIT (per rb)
+    //   5..6    : S_FI_LOAD_WGT / WAIT (per fi — streaming)
+    //   7..8    : S_FIL_CONV_START / WAIT
+    //   9..10   : S_FIL_DMA_STORE / WAIT
+    //   11      : S_RB_NEXT  (fi loop 끝 후 rb++)
+    //   12      : S_CONV_DONE
+    //   13..19  : L1 (POOL_S2)
+    //   20..25  : REPACK
+    //   28      : S_DONE
     //----------------------------------------------------------------
     localparam S_IDLE              = 5'd0,
-               S_LOAD_WGT          = 5'd1,
-               S_LOAD_WGT_WAIT     = 5'd2,
-               S_LOAD_BIAS         = 5'd3,
-               S_LOAD_BIAS_WAIT    = 5'd4,
-               S_RB_DMA_IFM        = 5'd5,
-               S_RB_DMA_IFM_WAIT   = 5'd6,
+               S_LOAD_BIAS         = 5'd1,
+               S_LOAD_BIAS_WAIT    = 5'd2,
+               S_RB_DMA_IFM        = 5'd3,
+               S_RB_DMA_IFM_WAIT   = 5'd4,
+               S_FI_LOAD_WGT       = 5'd5,    // per-fi weight DMA
+               S_FI_LOAD_WGT_WAIT  = 5'd6,
                S_FIL_CONV_START    = 5'd7,
                S_FIL_CONV_WAIT     = 5'd8,
                S_FIL_DMA_STORE     = 5'd9,
@@ -309,12 +321,12 @@ module yolo_engine #(
                S_L1_FI_STORE       = 5'd17,
                S_L1_FI_STORE_WAIT  = 5'd18,
                S_L1_NEXT_FI        = 5'd19,
-               S_RP_LOAD           = 5'd20,    // REPACK: DMA-read 1 ch row
+               S_RP_LOAD           = 5'd20,
                S_RP_LOAD_WAIT      = 5'd21,
-               S_RP_GEN            = 5'd22,    // transpose generate
-               S_RP_STORE          = 5'd23,    // DMA-write scratch_b
+               S_RP_GEN            = 5'd22,
+               S_RP_STORE          = 5'd23,
                S_RP_STORE_WAIT     = 5'd24,
-               S_RP_NEXT_CIG       = 5'd25,    // ci_g++ or row++
+               S_RP_NEXT_CIG       = 5'd25,
                S_DONE              = 5'd28;
 
     reg [4:0]  state_r;
@@ -343,19 +355,17 @@ module yolo_engine #(
     wire [7:0]  cur_ci_grps    = is_conv_l2 ? L2_CI_GRPS  : L0_CI_GRPS;
     wire [11:0] cur_eir_per_row= is_conv_l2 ? L2_EIR_PER_ROW : L0_W_BLOCKS;
 
-    wire [19:0] cur_wgt_dma    = is_conv_l2 ? L2_WGT_DMA_WORDS  : WGT_DMA_WORDS;
+    // per-filter weight DMA size (streaming): acc_len 에 의존
+    wire [19:0] cur_wgt_per_fi_words = is_conv_l2 ? L2_WGT_PER_FI_WORDS : L0_WGT_PER_FI_WORDS;
+    wire [31:0] cur_wgt_per_fi_bytes = is_conv_l2 ? L2_WGT_PER_FI_BYTES : L0_WGT_PER_FI_BYTES;
+    // 다른 DMA word count (per layer, 1 회)
     wire [19:0] cur_bias_dma   = is_conv_l2 ? L2_BIAS_DMA_WORDS : BIAS_DMA_WORDS;
     wire [19:0] cur_ifm_init   = is_conv_l2 ? L2_IFM_INIT_WORDS : IFM_INIT_WORDS;
     wire [19:0] cur_ifm_next   = is_conv_l2 ? L2_IFM_NEXT_WORDS : IFM_NEXT_WORDS;
     wire [19:0] cur_ofm_fil    = is_conv_l2 ? L2_OFM_FIL_WORDS  : OFM_FIL_WORDS;
 
-    // BRAM weight/bias entry base
-    //   wgt 는 write/read 단위가 다르므로 분리:
-    //     cur_wgt_wr_entry_base = DMA write 카운터 init  (72-bit entry, max 4096)
-    //     cur_wgt_rd_entry_base = conv_top i_wgt_base    (288-bit entry, max 1024)
-    wire [11:0] cur_wgt_wr_entry_base = is_conv_l2 ? L2_WGT_WR_ENTRY_BASE : 12'd0;
-    wire [9:0]  cur_wgt_rd_entry_base = is_conv_l2 ? L2_WGT_RD_ENTRY_BASE : 10'd0;
-    wire [11:0] cur_bias_entry_base   = is_conv_l2 ? L2_BIAS_ENTRY_BASE   : 12'd0;
+    // BRAM bias entry base (wgt 는 streaming 으로 항상 0 사용)
+    wire [11:0] cur_bias_entry_base = is_conv_l2 ? L2_BIAS_ENTRY_BASE : 12'd0;
 
     //----------------------------------------------------------------
     // DMA target enum (for asm/counter decoding)
@@ -495,7 +505,8 @@ module yolo_engine #(
             // DMA 시작 시 카운터 리셋 (또는 IFM 의 경우 row start 설정)
             if (dma_rd_start) begin
                 case (dma_target_r)
-                    DMA_TGT_WGT:  wgt_entry_addr_r  <= cur_wgt_wr_entry_base;
+                    // streaming: per-fi DMA 마다 BRAM[0] 부터 덮어쓰기
+                    DMA_TGT_WGT:  wgt_entry_addr_r  <= 12'd0;
                     DMA_TGT_BIAS: bias_entry_addr_r <= cur_bias_entry_base;
                     DMA_TGT_IFM:  begin
                         dma_ifm_row_r <= dma_ifm_row_start_r;
@@ -587,12 +598,10 @@ module yolo_engine #(
     wire _unused_fil = conv_fil_done;
     /* verilator lint_on UNUSED */
 
-    // conv_top 의 i_wgt_base = layer 별 READ entry base + fi × acc_len  (10-bit)
-    //   L0: acc_len=1 → fi_r * 1 = fi_r,        base=0
-    //   L2: acc_len=4 → fi_r * 4,               base=16
-    wire [9:0]  conv_wgt_base  = cur_wgt_rd_entry_base +
-                                 ((cur_acc_len == 8'd1) ? {5'd0, fi_r} :
-                                  (cur_acc_len == 8'd4) ? {3'd0, fi_r, 2'd0} : 10'd0);
+    // conv_top streaming 모드: i_wgt_base = 0
+    //   매 filter 의 weight 가 BRAM[0..acc_len-1] (read entry 기준) 에 fresh 적재됨.
+    //   conv_top.i_stream_wgt_mode = 1 (filter 전환 시 wgt_base 동결)
+    wire [9:0]  conv_wgt_base  = 10'd0;
     wire [11:0] conv_bias_base = cur_bias_entry_base + {7'd0, fi_r};
 
     conv_top u_conv (
@@ -601,7 +610,7 @@ module yolo_engine #(
         .o_done(conv_done),
         .o_fil_done(conv_fil_done),
         .i_conv_pause(1'b0),
-        .i_stream_wgt_mode(1'b0),
+        .i_stream_wgt_mode(1'b1),    // streaming: filter 전환 시 wgt_base 동결
         .i_mode(1'b0),
         .i_ofm_w_half(cur_w_half),
         .i_ofm_h_half(12'd1),
@@ -825,8 +834,14 @@ module yolo_engine #(
     //----------------------------------------------------------------
     // DRAM 주소 계산
     //----------------------------------------------------------------
-    // Weight base : L0 → dram_wgt_base, L2 → dram_wgt_base + 1024 byte
-    wire [31:0] addr_wgt  = dram_wgt_base + (is_conv_l2 ? L2_WGT_BYTE_OFF : 32'd0);
+    // 현재 layer 의 weight base byte (DRAM):
+    //   L0: dram_wgt_base + 0
+    //   L2: dram_wgt_base + 1024
+    wire [31:0] cur_wgt_layer_base = dram_wgt_base +
+                                     (is_conv_l2 ? L2_WGT_BYTE_OFF : 32'd0);
+    // per-filter weight DRAM byte addr = layer_base + fi × per_fi_bytes
+    wire [31:0] addr_wgt_fi = cur_wgt_layer_base + ({27'd0, fi_r} * cur_wgt_per_fi_bytes);
+
     // Bias base   : dram_wgt_base + 0x00A00000 (+ L2 offset 64 byte)
     wire [31:0] addr_bias = dram_wgt_base + 32'h00A00000 +
                             (is_conv_l2 ? L2_BIAS_BYTE_OFF : 32'd0);
@@ -927,22 +942,14 @@ module yolo_engine #(
                         layer_idx       <= 5'd0;
                         conv_phase_r    <= 5'd0;
                         network_done_r  <= 1'b0;
-                        state_r         <= S_LOAD_WGT;
+                        state_r         <= S_LOAD_BIAS;
                     end
                 end
 
                 //------------------------------------------------
-                S_LOAD_WGT: begin
-                    dma_target_r      <= DMA_TGT_WGT;
-                    dma_rd_num_trans  <= cur_wgt_dma;
-                    dma_rd_start_addr <= addr_wgt;
-                    dma_rd_start      <= 1'b1;
-                    state_r           <= S_LOAD_WGT_WAIT;
-                end
-                S_LOAD_WGT_WAIT: begin
-                    if (dma_rd_done) state_r <= S_LOAD_BIAS;
-                end
-
+                // Bias 는 layer 시작 시 한 번 BRAM 전체 적재 (작아서 streaming
+                // 불필요). Weight 는 per-fi 로 stream → S_LOAD_BIAS 만 layer
+                // 시작 시 실행.
                 //------------------------------------------------
                 S_LOAD_BIAS: begin
                     dma_target_r      <= DMA_TGT_BIAS;
@@ -970,8 +977,24 @@ module yolo_engine #(
                 S_RB_DMA_IFM_WAIT: begin
                     if (dma_rd_done) begin
                         fi_r    <= 5'd0;
-                        state_r <= S_FIL_CONV_START;
+                        state_r <= S_FI_LOAD_WGT;
                     end
+                end
+
+                //------------------------------------------------
+                // Streaming weight DMA — 현재 fi 의 weight 만 BRAM[0..] 에 fresh 적재
+                //   per-fi DMA word count = cur_wgt_per_fi_words (L0=16, L2=64)
+                //   per-fi DRAM byte addr = layer_base + fi × per_fi_bytes
+                //------------------------------------------------
+                S_FI_LOAD_WGT: begin
+                    dma_target_r      <= DMA_TGT_WGT;
+                    dma_rd_num_trans  <= cur_wgt_per_fi_words;
+                    dma_rd_start_addr <= addr_wgt_fi;
+                    dma_rd_start      <= 1'b1;
+                    state_r           <= S_FI_LOAD_WGT_WAIT;
+                end
+                S_FI_LOAD_WGT_WAIT: begin
+                    if (dma_rd_done) state_r <= S_FIL_CONV_START;
                 end
 
                 //------------------------------------------------
@@ -997,7 +1020,7 @@ module yolo_engine #(
                             state_r <= S_RB_NEXT;
                         end else begin
                             fi_r    <= fi_r + 5'd1;
-                            state_r <= S_FIL_CONV_START;
+                            state_r <= S_FI_LOAD_WGT;
                         end
                     end
                 end
@@ -1125,11 +1148,11 @@ module yolo_engine #(
                     if (rp_cig_r == 3'd3) begin
                         rp_cig_r <= 3'd0;
                         if (rp_row_r == 12'd127) begin
-                            // REPACK 완료 → L2 진입
+                            // REPACK 완료 → L2 진입 (streaming: bias 부터)
                             conv_phase_r <= 5'd2;
                             rb_r         <= 12'd0;
                             fi_r         <= 5'd0;
-                            state_r      <= S_LOAD_WGT;
+                            state_r      <= S_LOAD_BIAS;
                         end else begin
                             rp_row_r <= rp_row_r + 12'd1;
                             state_r  <= S_RP_LOAD;

@@ -1,12 +1,13 @@
 `timescale 1ns / 1ns
 //----------------------------------------------------------------------
-// l2_verify_tb.v — L2 (CONV3x3 Ci=16 Co=32) 검증 TB (streaming engine)
+// l2_nonstreaming_verify_tb.v — L2 (CONV3x3 Ci=16 Co=32) 검증 TB (archive)
+// streaming refactor 이전 — weight 전체 적재(S_LOAD_WGT) 시절의 TB.
 //
 //   [Phase A] Standalone L2
 //     - DRAM 의 L2 IFM 영역에 CONV02_input.hex 을 NHWC packed 포맷으로 사전 적재
-//     - wgt/bias .mem 적재 (L2 weight 는 layer base 1024 부터, per-fi 256 byte)
-//     - layer_idx=2, conv_phase_r=2, state_r=S_LOAD_BIAS (=1) 로 강제 진입 → release
-//     - bias load → per-rb (IFM load → per-fi (weight load, conv, store))
+//     - wgt/bias 도 .mem 파일에서 로드 (L2 의 entry base 16 부터 사용)
+//     - layer_idx=2, conv_phase_r=2, state_r=S_LOAD_WGT 로 강제 진입 → release
+//     - L2 conv 만 단독 실행 후 layer_idx=3 도달
 //     - DRAM L2 OFM ↔ CONV02_output.hex 비교
 //
 //   [Phase B] Chain L0 → L1 → REPACK → L2
@@ -26,7 +27,7 @@
 //----------------------------------------------------------------------
 `include "user_define_h.v"
 
-module l2_verify_tb;
+module l2_nonstreaming_verify_tb;
 
 `ifdef FPGA
     initial begin
@@ -305,7 +306,7 @@ module l2_verify_tb;
         //==================================================================
         // [Phase A] Standalone L2
         //   wgt/bias .mem 로드 + L2 IFM 영역 NHWC packed 사전 적재
-        //   layer_idx=2, conv_phase_r=2, state_r=S_LOAD_BIAS (=1) 강제 진입 → release
+        //   layer_idx=2, conv_phase_r=2, state_r=S_LOAD_WGT 강제 진입 → release
         //   layer_idx=3 도달 시 L2 완료
         //==================================================================
         $display("");
@@ -327,8 +328,8 @@ module l2_verify_tb;
         force u_yolo_engine.conv_phase_r = 5'd2;
         force u_yolo_engine.fi_r         = 5'd0;
         force u_yolo_engine.rb_r         = 12'd0;
-        force u_yolo_engine.state_r      = 5'd1;       // S_LOAD_BIAS (streaming start)
-        $display("[L2V-TB][%0t] Phase A : force layer_idx=2 conv_phase=2 state=S_LOAD_BIAS", $time);
+        force u_yolo_engine.state_r      = 5'd1;       // S_LOAD_WGT
+        $display("[L2V-TB][%0t] Phase A : force layer_idx=2 conv_phase=2 state=S_LOAD_WGT", $time);
         @(posedge clk);
         release u_yolo_engine.layer_idx;
         release u_yolo_engine.conv_phase_r;

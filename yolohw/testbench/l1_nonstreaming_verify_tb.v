@@ -1,36 +1,37 @@
 `timescale 1ns / 1ns
 //----------------------------------------------------------------------
-// l2_verify_tb.v — L2 (CONV3x3 Ci=16 Co=32) 검증 TB (streaming engine)
+// l1_nonstreaming_verify_tb.v — L1 (POOL_S2) 2-단계 통합 검증 TB (archive)
+// streaming refactor 이전의 yolo_engine (state numbering 다름) 과만 빌드.
 //
-//   [Phase A] Standalone L2
-//     - DRAM 의 L2 IFM 영역에 CONV02_input.hex 을 NHWC packed 포맷으로 사전 적재
-//     - wgt/bias .mem 적재 (L2 weight 는 layer base 1024 부터, per-fi 256 byte)
-//     - layer_idx=2, conv_phase_r=2, state_r=S_LOAD_BIAS (=1) 로 강제 진입 → release
-//     - bias load → per-rb (IFM load → per-fi (weight load, conv, store))
-//     - DRAM L2 OFM ↔ CONV02_output.hex 비교
+// 한 번의 시뮬레이션 안에서 다음 2 단계가 순차적으로 진행됩니다.
 //
-//   [Phase B] Chain L0 → L1 → REPACK → L2
-//     - 시뮬레이션 리셋 → wgt/bias/ifm .mem 적재 → ap_start=1
-//     - 엔진 자연 흐름: L0 → L1 → REPACK → L2 (layer_idx 0→1→2→3)
-//     - DRAM L2 OFM ↔ CONV02_output.hex 비교
+//   [Phase A] Standalone L1
+//     - L0 OFM (CONV00_output.hex) 를 DRAM 의 L0 OFM 영역에 사전 적재
+//     - layer_idx, state_r 을 강제로 L1 시작 위치로 force
+//     - L1 만 단독 실행
+//     - DRAM L1 OFM 결과 ↔ CONV02_input.hex 비교
 //
-// DRAM 메모리 맵 (yolo_engine.v 기준):
-//   WGT  : 0x0000_0000 (L0=0..1023 byte, L2=1024..9215 byte)
-//   BIAS : 0x00A0_0000 (L0=0..63 byte, L2=64..191 byte)
-//   IFM  : 0x00B0_0000 (L0 IFM, 65536 word)
+//   [Phase B] Chain L0 → L1
+//     - 시뮬레이션 리셋 후 wgt/bias/ifm .mem 만 적재 (L0 OFM 영역은 0 초기화)
+//     - ap_start=1 → 엔진이 자연스럽게 L0 → L1 순차 실행
+//     - DRAM L0 OFM ↔ CONV00_output.hex 비교 (참고용)
+//     - DRAM L1 OFM ↔ CONV02_input.hex 비교
+//
+// DRAM 메모리 맵:
+//   WGT  : 0x0000_0000 (2_577_152 word)
+//   BIAS : 0x00A0_0000 (   2_294 word)
+//   IFM  : 0x00B0_0000 (  65_536 word)
 //   OFM  : 0x00C0_0000 →
-//            L0 OFM      : offset      0..0x0FFFFF (= 262,144 word)
-//            L1 OFM      : offset 0x100000..0x13FFFF (=  65,536 word)
-//            L2 IFM (rp) : offset 0x140000..0x17FFFF (=  65,536 word)
-//            L2 OFM      : offset 0x180000..0x1FFFFF (= 131,072 word)
+//            L0 OFM : offset      0..262143 word   (16 ch × 128 × 128 packed)
+//            L1 OFM : offset 262144..327679 word   (16 ch × 128 × 32 packed)
 //----------------------------------------------------------------------
 `include "user_define_h.v"
 
-module l2_verify_tb;
+module l1_nonstreaming_verify_tb;
 
 `ifdef FPGA
     initial begin
-        $display("[L2V-TB][FATAL] FPGA macro enabled. Comment out `define FPGA.");
+        $display("[L1V-TB][FATAL] FPGA macro enabled. Comment out `define FPGA.");
         $finish;
     end
 `else
@@ -38,8 +39,8 @@ module l2_verify_tb;
     parameter WGT_MEM     = "../../../../../../testbench/inout_data_sw/gen_wgt_dram.mem";
     parameter BIAS_MEM    = "../../../../../../testbench/inout_data_sw/gen_bias_dram.mem";
     parameter IFM_MEM     = "../../../../../../testbench/inout_data_sw/gen_ifm_dram.mem";
+    parameter L0_GOLD_HEX = "../../../../../../testbench/inout_data_sw/log_feamap/CONV00_output.hex";
     parameter L1_GOLD_HEX = "../../../../../../testbench/inout_data_sw/log_feamap/CONV02_input.hex";
-    parameter L2_GOLD_HEX = "../../../../../../testbench/inout_data_sw/log_feamap/CONV02_output.hex";
 
     parameter CLK_PERIOD = 10;
     reg clk, rstn;
@@ -53,8 +54,8 @@ module l2_verify_tb;
     localparam integer IFM_WORD_BASE    = 32'h00B00000 >> 2;
     localparam integer IFM_TOTAL_WORDS  = 65_536;
     localparam integer OFM_WORD_BASE    = 32'h00C00000 >> 2;
-    localparam integer L2_IFM_OFF_W     = 32'h00140000 >> 2;   // 327,680 word
-    localparam integer L2_OFM_OFF_W     = 32'h00180000 >> 2;   // 393,216 word
+    localparam integer L0_OFM_OFF       = 0;
+    localparam integer L1_OFM_OFF       = 262_144;
 
     // ── AXI4-Lite tied ────────────────────────────────────────────────
     wire [3:0]  S_AWADDR  = 4'd0;  wire [2:0] S_AWPROT = 3'd0;
@@ -186,15 +187,24 @@ module l2_verify_tb;
     end
 
     // ── Golden 버퍼 ────────────────────────────────────────────────────
-    reg [7:0] golden_l1 [0:262143];    // 16 × 128 × 128 = L1 OFM = L2 IFM (NCHW)
-    reg [7:0] golden_l2 [0:524287];    // 32 × 128 × 128 = L2 OFM (NCHW)
+    reg [7:0] golden_l0 [0:1048575];   // 16 × 256 × 256 (L0 OFM, NCHW)
+    reg [7:0] golden_l1 [0:262143];    // 16 × 128 × 128 (L1 OFM, NCHW)
 
-    integer mm_l2_A, mm_l2_B;
+    // ── 공통 시퀀스 변수 ──────────────────────────────────────────────
+    integer di, fi, hb, wb;
+    integer r_pool, cb_pool, c4;
+    integer mm_l0, mm_l1_A, mm_l1_B;
+    integer mm_print;
+    integer addr_dp;
+    reg [31:0] dword;
+    reg [7:0]  got_b, exp_b;
+    reg [7:0]  p0, p1, p2, p3;
 
     //----------------------------------------------------------------
     // Tasks
     //----------------------------------------------------------------
 
+    // DRAM 전체 0 초기화
     task dram_zero;
         integer t_i;
         begin
@@ -202,54 +212,78 @@ module l2_verify_tb;
         end
     endtask
 
+    // wgt/bias/ifm .mem 로드 (Phase B 용)
     task load_dram_inputs;
         begin
-            $display("[L2V-TB] Loading WGT  : %s", WGT_MEM);
+            $display("[L1V-TB] Loading WGT  : %s", WGT_MEM);
             $readmemh(WGT_MEM,  dram, 0,              WGT_TOTAL_WORDS - 1);
-            $display("[L2V-TB] Loading BIAS : %s", BIAS_MEM);
+            $display("[L1V-TB] Loading BIAS : %s", BIAS_MEM);
             $readmemh(BIAS_MEM, dram, BIAS_WORD_BASE, BIAS_WORD_BASE + BIAS_TOTAL_WORDS - 1);
-            $display("[L2V-TB] Loading IFM  : %s", IFM_MEM);
+            $display("[L1V-TB] Loading IFM  : %s", IFM_MEM);
             $readmemh(IFM_MEM,  dram, IFM_WORD_BASE,  IFM_WORD_BASE  + IFM_TOTAL_WORDS  - 1);
         end
     endtask
 
+    // 골든 hex 로드
     task load_goldens;
         begin
-            $display("[L2V-TB] Loading L1 OFM golden (= L2 IFM source): %s", L1_GOLD_HEX);
+            $display("[L1V-TB] Loading L0 OFM golden : %s", L0_GOLD_HEX);
+            $readmemh(L0_GOLD_HEX, golden_l0);
+            $display("[L1V-TB] Loading L1 OFM golden : %s", L1_GOLD_HEX);
             $readmemh(L1_GOLD_HEX, golden_l1);
-            $display("[L2V-TB] Loading L2 OFM golden                  : %s", L2_GOLD_HEX);
-            $readmemh(L2_GOLD_HEX, golden_l2);
         end
     endtask
 
-    // Phase A 용: golden_l1 (NCHW byte) → DRAM L2 IFM 영역 (NHWC packed)
-    //   per (row, ci_g, col_b) 16-byte entry:
-    //     byte[col_l*4 + ch_l] = golden_l1[(ci_g*4+ch_l)*16384 + row*128 + (col_b*4 + col_l)]
-    //   DRAM word addr = OFM_WORD_BASE + L2_IFM_OFF_W + row*512 + ci_g*128 + col_b*4 + col_l
-    task preload_l2_ifm;
-        integer t_row, t_cig, t_cb, t_cl, t_chl;
-        integer t_chfull, t_col, t_addr_w;
-        reg [7:0] tb [0:15];
-        reg [31:0] tword;
+    // golden_l0 (NCHW byte) → DRAM L0 OFM 영역에 2×2 conv-block packed 적재
+    //   word(fi, h_block, w_block) at OFM_BASE + fi*16384 + h_block*128 + w_block
+    //   bytes = {p11, p10, p01, p00}, p_sh_sw = golden_l0[fi*65536 + (2hb+sh)*256 + (2wb+sw)]
+    task preload_l0_ofm;
+        integer t_fi, t_hb, t_wb, t_addr;
+        reg [7:0] tp0, tp1, tp2, tp3;
         begin
-            $display("[L2V-TB] Pre-loading DRAM L2 IFM region (NHWC packed, 65,536 word)...");
-            for (t_row = 0; t_row < 128; t_row = t_row + 1) begin
-                for (t_cig = 0; t_cig < 4; t_cig = t_cig + 1) begin
+            $display("[L1V-TB] Pre-loading DRAM L0 OFM region (16 × 16384 word)...");
+            for (t_fi = 0; t_fi < 16; t_fi = t_fi + 1) begin
+                for (t_hb = 0; t_hb < 128; t_hb = t_hb + 1) begin
+                    for (t_wb = 0; t_wb < 128; t_wb = t_wb + 1) begin
+                        tp0 = golden_l0[t_fi*65536 + (t_hb*2  )*256 + (t_wb*2  )];
+                        tp1 = golden_l0[t_fi*65536 + (t_hb*2  )*256 + (t_wb*2+1)];
+                        tp2 = golden_l0[t_fi*65536 + (t_hb*2+1)*256 + (t_wb*2  )];
+                        tp3 = golden_l0[t_fi*65536 + (t_hb*2+1)*256 + (t_wb*2+1)];
+                        t_addr = OFM_WORD_BASE + L0_OFM_OFF + t_fi*16384 + t_hb*128 + t_wb;
+                        dram[t_addr] = {tp3, tp2, tp1, tp0};
+                    end
+                end
+            end
+        end
+    endtask
+
+    // L1 OFM 비교 → mismatch 개수 반환
+    //   DRAM word(fi, r, cb) at L1_OFM_OFF + fi*4096 + r*32 + cb
+    //   byte_k = pool(fi, r, cb*4 + k) = golden_l1[fi*16384 + r*128 + cb*4 + k]
+    task compare_l1_ofm;
+        output integer mismatch_cnt;
+        integer t_fi, t_r, t_cb, t_c4;
+        integer t_print;
+        reg [31:0] tw;
+        reg [7:0]  tg, te;
+        begin
+            mismatch_cnt = 0;
+            t_print      = 0;
+            for (t_fi = 0; t_fi < 16; t_fi = t_fi + 1) begin
+                for (t_r = 0; t_r < 128; t_r = t_r + 1) begin
                     for (t_cb = 0; t_cb < 32; t_cb = t_cb + 1) begin
-                        // entry 의 16 byte 수집
-                        for (t_cl = 0; t_cl < 4; t_cl = t_cl + 1) begin
-                            for (t_chl = 0; t_chl < 4; t_chl = t_chl + 1) begin
-                                t_chfull = t_cig*4 + t_chl;
-                                t_col    = t_cb*4 + t_cl;
-                                tb[t_cl*4 + t_chl] = golden_l1[t_chfull*16384 + t_row*128 + t_col];
+                        tw = dram[OFM_WORD_BASE + L1_OFM_OFF + t_fi*4096 + t_r*32 + t_cb];
+                        for (t_c4 = 0; t_c4 < 4; t_c4 = t_c4 + 1) begin
+                            tg = tw[t_c4*8 +: 8];
+                            te = golden_l1[t_fi*16384 + t_r*128 + t_cb*4 + t_c4];
+                            if (tg !== te) begin
+                                mismatch_cnt = mismatch_cnt + 1;
+                                if (t_print < 8) begin
+                                    $display("  [L1 MISMATCH] fi=%0d r=%0d c=%0d got=%02x exp=%02x",
+                                             t_fi, t_r, t_cb*4+t_c4, tg, te);
+                                    t_print = t_print + 1;
+                                end
                             end
-                        end
-                        // 16 byte → 4 × 32-bit word (little-endian)
-                        for (t_cl = 0; t_cl < 4; t_cl = t_cl + 1) begin
-                            tword = {tb[t_cl*4 + 3], tb[t_cl*4 + 2],
-                                     tb[t_cl*4 + 1], tb[t_cl*4 + 0]};
-                            t_addr_w = OFM_WORD_BASE + L2_IFM_OFF_W + t_row*512 + t_cig*128 + t_cb*4 + t_cl;
-                            dram[t_addr_w] = tword;
                         end
                     end
                 end
@@ -257,31 +291,31 @@ module l2_verify_tb;
         end
     endtask
 
-    // L2 OFM 비교 → mismatch 개수 반환
-    //   DRAM word(fi, hb, wb) at L2_OFM_OFF_W + fi*4096 + hb*64 + wb
-    //   bytes = {p11, p10, p01, p00}, p_sh_sw = golden_l2[fi*16384 + (2hb+sh)*128 + (2wb+sw)]
-    task compare_l2_ofm;
+    // L0 OFM 비교 → mismatch 개수 반환 (Phase B 의 chain 확인 용)
+    //   DRAM word(fi, hb, wb) at L0_OFM_OFF + fi*16384 + hb*128 + wb
+    //   bytes = {p11, p10, p01, p00}, p_sh_sw = golden_l0[fi*65536 + (2hb+sh)*256 + (2wb+sw)]
+    task compare_l0_ofm;
         output integer mismatch_cnt;
-        integer t_fi, t_hb, t_wb, t_sh, t_sw, t_idx, t_print;
+        integer t_fi, t_hb, t_wb, t_sh, t_sw, t_idx;
+        integer t_print;
         reg [31:0] tw;
         reg [7:0]  tg, te;
         begin
             mismatch_cnt = 0;
             t_print      = 0;
-            for (t_fi = 0; t_fi < 32; t_fi = t_fi + 1) begin
-                for (t_hb = 0; t_hb < 64; t_hb = t_hb + 1) begin
-                    for (t_wb = 0; t_wb < 64; t_wb = t_wb + 1) begin
-                        // L2 OFM DRAM word addr = OFM_WORD_BASE + L2_OFM_OFF_W + fi*4096 + hb*64 + wb
-                        tw = dram[OFM_WORD_BASE + L2_OFM_OFF_W + t_fi*4096 + t_hb*64 + t_wb];
+            for (t_fi = 0; t_fi < 16; t_fi = t_fi + 1) begin
+                for (t_hb = 0; t_hb < 128; t_hb = t_hb + 1) begin
+                    for (t_wb = 0; t_wb < 128; t_wb = t_wb + 1) begin
+                        tw = dram[OFM_WORD_BASE + L0_OFM_OFF + t_fi*16384 + t_hb*128 + t_wb];
                         for (t_sh = 0; t_sh < 2; t_sh = t_sh + 1) begin
                             for (t_sw = 0; t_sw < 2; t_sw = t_sw + 1) begin
                                 t_idx = t_sh*2 + t_sw;
                                 tg = tw[t_idx*8 +: 8];
-                                te = golden_l2[t_fi*16384 + (t_hb*2+t_sh)*128 + (t_wb*2+t_sw)];
+                                te = golden_l0[t_fi*65536 + (t_hb*2+t_sh)*256 + (t_wb*2+t_sw)];
                                 if (tg !== te) begin
                                     mismatch_cnt = mismatch_cnt + 1;
-                                    if (t_print < 8) begin
-                                        $display("  [L2 MISMATCH] fi=%0d h=%0d w=%0d got=%02x exp=%02x",
+                                    if (t_print < 4) begin
+                                        $display("  [L0 MISMATCH] fi=%0d h=%0d w=%0d got=%02x exp=%02x",
                                                  t_fi, t_hb*2+t_sh, t_wb*2+t_sw, tg, te);
                                         t_print = t_print + 1;
                                     end
@@ -294,6 +328,15 @@ module l2_verify_tb;
         end
     endtask
 
+    // DRAM L1 OFM 영역 0 초기화 (Phase A → B 사이)
+    task clear_l1_ofm_region;
+        integer t_i;
+        begin
+            for (t_i = 0; t_i < 65_536; t_i = t_i + 1)
+                dram[OFM_WORD_BASE + L1_OFM_OFF + t_i] = 32'd0;
+        end
+    endtask
+
     //----------------------------------------------------------------
     // Main 시퀀스
     //----------------------------------------------------------------
@@ -303,17 +346,17 @@ module l2_verify_tb;
         load_goldens;
 
         //==================================================================
-        // [Phase A] Standalone L2
-        //   wgt/bias .mem 로드 + L2 IFM 영역 NHWC packed 사전 적재
-        //   layer_idx=2, conv_phase_r=2, state_r=S_LOAD_BIAS (=1) 강제 진입 → release
-        //   layer_idx=3 도달 시 L2 완료
+        // [Phase A] Standalone L1
+        //   L0 OFM 영역에 골든 hex 사전 적재, layer_idx=1, state_r=S_L1_FI_LOAD
+        //   force → release. L1 만 단독으로 16 filter 처리 후 layer_idx=2 도달.
         //==================================================================
         $display("");
-        $display("[L2V-TB] ============== Phase A : Standalone L2 ==============");
+        $display("[L1V-TB] ============== Phase A : Standalone L1 ==============");
 
-        load_dram_inputs;             // wgt/bias/ifm .mem
-        preload_l2_ifm;               // L2 IFM = NHWC packed CONV02_input.hex
+        preload_l0_ofm;
 
+        // ctrl_reg 설정 (wgt_base 0x0, ifm_base 0x00B0_0000, ofm_base 0x00C0_0000)
+        //   wgt/ifm 영역은 L1 단독 실행 시 접근하지 않음. ofm_base 만 중요.
         force u_yolo_engine.u_axi.slv_reg1 = 32'h0000_0000;
         force u_yolo_engine.u_axi.slv_reg2 = 32'h00B0_0000;
         force u_yolo_engine.u_axi.slv_reg3 = 32'h00C0_0000;
@@ -321,44 +364,47 @@ module l2_verify_tb;
         #(8*CLK_PERIOD) rstn = 1'b1;
         #(4*CLK_PERIOD);
 
-        // L2 시작 위치로 강제 진입
+        // L1 시작 위치로 강제 진입
         @(posedge clk);
-        force u_yolo_engine.layer_idx    = 5'd2;
-        force u_yolo_engine.conv_phase_r = 5'd2;
-        force u_yolo_engine.fi_r         = 5'd0;
-        force u_yolo_engine.rb_r         = 12'd0;
-        force u_yolo_engine.state_r      = 5'd1;       // S_LOAD_BIAS (streaming start)
-        $display("[L2V-TB][%0t] Phase A : force layer_idx=2 conv_phase=2 state=S_LOAD_BIAS", $time);
+        force u_yolo_engine.layer_idx = 5'd1;
+        force u_yolo_engine.fi_r      = 5'd0;
+        force u_yolo_engine.state_r   = 5'd13;   // S_L1_FI_LOAD
+        $display("[L1V-TB][%0t] Phase A : force layer_idx=1, state_r=S_L1_FI_LOAD", $time);
         @(posedge clk);
         release u_yolo_engine.layer_idx;
-        release u_yolo_engine.conv_phase_r;
         release u_yolo_engine.fi_r;
-        release u_yolo_engine.rb_r;
         release u_yolo_engine.state_r;
 
-        // L2 완료 대기 (layer_idx → 3)
-        wait (u_yolo_engine.layer_idx == 5'd3);
-        $display("[L2V-TB][%0t] Phase A : L2 COMPLETED (layer_idx → 3)", $time);
+        // L1 완료 대기 (layer_idx → 2)
+        wait (u_yolo_engine.layer_idx == 5'd2);
+        $display("[L1V-TB][%0t] Phase A : L1 COMPLETED (layer_idx → 2)", $time);
         #(40*CLK_PERIOD);
 
-        compare_l2_ofm(mm_l2_A);
-        $display("[L2V-TB][Phase A] L2 OFM mismatch: %0d / 524,288", mm_l2_A);
-        if (mm_l2_A == 0)
-            $display("[L2V-TB][Phase A] *** PASS *** : L2 conv 단독 동작 OK");
+        compare_l1_ofm(mm_l1_A);
+        $display("[L1V-TB][Phase A] L1 OFM mismatch: %0d / 262,144", mm_l1_A);
+
+        if (mm_l1_A == 0)
+            $display("[L1V-TB][Phase A] *** PASS *** : L1 (POOL_S2) 단독 동작 OK");
         else
-            $display("[L2V-TB][Phase A] *** FAIL *** : L2 단독 동작에 BUG (또는 L0 양자화 차이의 propagation)");
+            $display("[L1V-TB][Phase A] *** FAIL *** : L1 단독 동작에 BUG");
 
         //==================================================================
-        // [Phase B] Chain L0 → L1 → REPACK → L2
+        // [Phase B] Chain L0 → L1
+        //   DUT 리셋 → wgt/bias/ifm .mem 로드 → ap_start=1
+        //   L0 → L1 자연 진행. layer_idx → 2 도달.
         //==================================================================
         $display("");
-        $display("[L2V-TB] ============== Phase B : Chain L0 → L1 → REPACK → L2 ==============");
+        $display("[L1V-TB] ============== Phase B : Chain L0 → L1 ==============");
 
+        // DUT 리셋 + DRAM 재초기화
         rstn = 1'b0;
+        // 기존 force 는 이미 release 됨. ap_start 도 release 한 적 없으니 슬레이브
+        // 레지스터는 자체 동작.
         #(8*CLK_PERIOD);
         dram_zero;
         load_dram_inputs;
 
+        // ctrl_reg 재설정 (포스 유지)
         force u_yolo_engine.u_axi.slv_reg1 = 32'h0000_0000;
         force u_yolo_engine.u_axi.slv_reg2 = 32'h00B0_0000;
         force u_yolo_engine.u_axi.slv_reg3 = 32'h00C0_0000;
@@ -366,39 +412,49 @@ module l2_verify_tb;
         #(4*CLK_PERIOD) rstn = 1'b1;
         #(4*CLK_PERIOD);
 
+        // ap_start = 1 → L0 자연 시작
         @(posedge clk);
         force u_yolo_engine.u_axi.slv_reg0 = 32'd1;
-        $display("[L2V-TB][%0t] Phase B : ap_start = 1", $time);
+        $display("[L1V-TB][%0t] Phase B : ap_start = 1", $time);
         @(posedge clk); @(posedge clk);
         force u_yolo_engine.u_axi.slv_reg0 = 32'd0;
 
-        wait (u_yolo_engine.layer_idx == 5'd3);
-        $display("[L2V-TB][%0t] Phase B : L0→L1→REPACK→L2 ALL COMPLETED", $time);
+        // L1 완료까지 대기 (layer_idx → 2)
+        wait (u_yolo_engine.layer_idx == 5'd2);
+        $display("[L1V-TB][%0t] Phase B : L0 → L1 ALL COMPLETED (layer_idx → 2)", $time);
         #(40*CLK_PERIOD);
 
-        compare_l2_ofm(mm_l2_B);
-        $display("[L2V-TB][Phase B] L2 OFM mismatch: %0d / 524,288", mm_l2_B);
-        if (mm_l2_B == 0)
-            $display("[L2V-TB][Phase B] *** PASS *** : 전체 chain 동작 OK");
+        // L0 확인 (chain 의 연결 무결성 sanity check)
+        compare_l0_ofm(mm_l0);
+        $display("[L1V-TB][Phase B] L0 OFM mismatch: %0d / 1,048,576", mm_l0);
+
+        // L1 확인 (실제 검증 포인트)
+        compare_l1_ofm(mm_l1_B);
+        $display("[L1V-TB][Phase B] L1 OFM mismatch: %0d / 262,144", mm_l1_B);
+
+        if (mm_l1_B == 0)
+            $display("[L1V-TB][Phase B] *** PASS *** : L0 → L1 chain 동작 OK");
         else
-            $display("[L2V-TB][Phase B] *** FAIL *** : chain 에 BUG (L0 양자화 차이 포함)");
+            $display("[L1V-TB][Phase B] *** FAIL *** : L0 → L1 chain 에 BUG");
 
         //==================================================================
+        // 최종 요약
+        //==================================================================
         $display("");
-        $display("[L2V-TB] ============================================================");
-        $display("[L2V-TB] Phase A (standalone L2)       : %s (mismatch=%0d)",
-                 (mm_l2_A == 0) ? "PASS" : "FAIL", mm_l2_A);
-        $display("[L2V-TB] Phase B (L0→L1→REPACK→L2 chain): %s (mismatch=%0d)",
-                 (mm_l2_B == 0) ? "PASS" : "FAIL", mm_l2_B);
-        $display("[L2V-TB] ============================================================");
+        $display("[L1V-TB] ============================================================");
+        $display("[L1V-TB] Phase A (standalone L1) : %s (mismatch=%0d)",
+                 (mm_l1_A == 0) ? "PASS" : "FAIL", mm_l1_A);
+        $display("[L1V-TB] Phase B (L0 → L1 chain) : %s (mismatch=%0d)",
+                 (mm_l1_B == 0) ? "PASS" : "FAIL", mm_l1_B);
+        $display("[L1V-TB] ============================================================");
 
         #(20*CLK_PERIOD) $finish;
     end
 
     // ── Watchdog ──────────────────────────────────────────────────────
     initial begin
-        repeat(40_000) #(1_000_000);   // 40s sim time
-        $display("[L2V-TB] *** TIMEOUT ***");
+        repeat(20_000) #(1_000_000);   // 20s sim time
+        $display("[L1V-TB] *** TIMEOUT ***");
         $finish;
     end
 
@@ -409,18 +465,32 @@ module l2_verify_tb;
     always @(posedge clk) begin
         if (rstn) begin
             if (u_yolo_engine.state_r !== prev_st) begin
-                $display("[L2V-TB][%0t] L%0d state %0d → %0d  (cp=%0d fi=%0d rb=%0d)",
+                $display("[L1V-TB][%0t] L%0d state %0d → %0d  (fi=%0d rb=%0d)",
                          $time, u_yolo_engine.layer_idx,
                          prev_st, u_yolo_engine.state_r,
-                         u_yolo_engine.conv_phase_r,
                          u_yolo_engine.fi_r, u_yolo_engine.rb_r);
                 prev_st <= u_yolo_engine.state_r;
             end
             if (u_yolo_engine.layer_idx !== prev_li) begin
-                $display("[L2V-TB][%0t] >>> layer_idx %0d → %0d <<<",
+                $display("[L1V-TB][%0t] >>> layer_idx %0d → %0d <<<",
                          $time, prev_li, u_yolo_engine.layer_idx);
                 prev_li <= u_yolo_engine.layer_idx;
             end
+        end
+    end
+
+    // ── pool 활동 모니터 (시작/완료) ─────────────────────────────────
+    reg prev_pool_start;
+    initial prev_pool_start = 1'b0;
+    always @(posedge clk) begin
+        if (rstn) begin
+            prev_pool_start <= u_yolo_engine.pool_start_r;
+            if (u_yolo_engine.pool_start_r && !prev_pool_start)
+                $display("[L1V-TB][%0t] pool_start (fi=%0d)",
+                         $time, u_yolo_engine.fi_r);
+            if (u_yolo_engine.pool_done)
+                $display("[L1V-TB][%0t] pool_done  (fi=%0d)",
+                         $time, u_yolo_engine.fi_r);
         end
     end
 
