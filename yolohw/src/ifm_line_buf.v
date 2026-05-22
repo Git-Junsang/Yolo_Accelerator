@@ -85,7 +85,7 @@ module ifm_line_buf(
     //----------------------------------------------------------------
     wire signed [13:0] col_start_s    = $signed({1'b0, i_cb, 1'b0}) - 14'sd1;
     wire signed [13:0] base_entry_s   = col_start_s >>> 2;
-    wire        [1:0]  offset         = col_start_s[1:0];
+    wire        [1:0]  offset_3x3     = col_start_s[1:0];
 
     wire [22:0] row_off       = i_acc_cyc * i_w_blocks;
     wire [10:0] base_entry_u  = base_entry_s[10:0];
@@ -101,8 +101,22 @@ module ifm_line_buf(
     //   1×1 mode 에서는 ci_groups 가 매우 큼 (예: L12 Ci=512 → 128 groups).
     //   acc_cyc 한 step = 9 ci_groups 처리.
     //----------------------------------------------------------------
-    wire [11:0] col_block_1x1   = i_cb[11:2];   // base col 4-block
-    wire [1:0]  col_inblk_1x1   = i_cb[1:0];    // col within block
+    //----------------------------------------------------------------
+    // 1×1 mode 매핑 (2026-05-22 수정):
+    //   i_cb = OFM block coord (W_HALF 까지 진행, 3×3 mode 와 동일 의미).
+    //   한 호출 = OFM 2×2 block at (2*Rb..2*Rb+1, 2*Cb..2*Cb+1).
+    //
+    //   col_block_1x1 = i_cb >> 1   (entry index = OFM block / 2 = input col_block)
+    //   col_inblk_1x1 = (i_cb[0]) ? 2 : 0  (0 또는 2 — entry 내 짝수 col)
+    //   offset_1x1    = 0           (window col 0..3 = entry_a[0..3] 직접 매핑)
+    //
+    //   → ifm00 = window[1][col_inblk]     = input col (col_block*4 + col_inblk)
+    //     ifm01 = window[1][col_inblk + 1] = input col + 1
+    //     OFM cols = (2*Cb, 2*Cb+1) = (col_block*4 + col_inblk, +1)
+    //----------------------------------------------------------------
+    wire [11:0] col_block_1x1   = i_cb[11:1];           // i_cb >> 1
+    wire [1:0]  col_inblk_1x1   = {i_cb[0], 1'b0};      // 0 or 2
+    wire [1:0]  offset_1x1      = 2'd0;
     wire [11:0] cgrp_base_1x1   = {i_acc_cyc, 4'd0} - {4'd0, i_acc_cyc};  // acc_cyc * 15...
     // 위 식 부정확. 단순화: cgrp_base = acc_cyc * 9. 9 = 8 + 1.
     // 1×1 path 는 별도 read addr 9 개 필요 → 본 모듈에서는 base 만 계산하고
@@ -129,10 +143,11 @@ module ifm_line_buf(
     wire [10:0] rd_addr_b_1x1   = addr_1x1_b_long[10:0];
 
     //----------------------------------------------------------------
-    // Mode mux: read addr
+    // Mode mux: read addr + offset
     //----------------------------------------------------------------
     wire [10:0] rd_addr_a = i_mode ? rd_addr_a_1x1 : rd_addr_a_3x3;
     wire [10:0] rd_addr_b = i_mode ? rd_addr_b_1x1 : rd_addr_b_3x3;
+    wire [1:0]  offset    = i_mode ? offset_1x1    : offset_3x3;
 
     //----------------------------------------------------------------
     // 4 line buffer (True Dual Port BRAM, behavioral + FPGA IP)
@@ -382,23 +397,35 @@ module ifm_line_buf(
                 end
             end
         end else begin
-            // ===== 1×1 packing =====
+            // ===== 1×1 packing (2026-05-23 수정) =====
             //   receptive field = 1 col × 1 row × 4 ch (single ci_group per cycle).
-            //   mac_kern 의 36-byte slot 중 첫 4 byte 만 valid, 나머지 32 byte 는 0.
-            //   ※ 강의자료 단순화 가정: 1×1 mode 의 acc_len = ci_groups (Ci/4),
-            //     각 cycle 한 group 누적. 16-MAC 풀활용보다 효율은 낮지만
-            //     RTL 단순.
+            //   mac_stack 의 mul[i] = wgt[i*8+:8] × ifm[i*8+:8] 매핑에 맞춰:
+            //     weight 의 ch 0..3 은 byte 0, 9, 18, 27 위치 (slot 별 LSB)
+            //     따라서 ifm 의 ch 0..3 도 동일 위치 (byte 0, 9, 18, 27) 에 배치
             //   pixel mapping:
             //     ifm_00 ← window[1][col_inblk_1x1]      (row 2*Rb,   col 2*Cb_block + col_inblk)
             //     ifm_01 ← window[1][col_inblk_1x1 + 1]  (col + 1)
             //     ifm_10 ← window[2][col_inblk_1x1]      (row 2*Rb+1, col 동일)
             //     ifm_11 ← window[2][col_inblk_1x1 + 1]
-            //   ※ 1×1 mode 에서 line buffer 는 base_line+1 = row 2*Rb,
-            //     base_line+2 = row 2*Rb+1 로 매핑되어 있음.
-            ifm00_w[31:0] = window[1][col_inblk_r];
-            ifm01_w[31:0] = window[1][col_inblk_r + 2'd1];
-            ifm10_w[31:0] = window[2][col_inblk_r];
-            ifm11_w[31:0] = window[2][col_inblk_r + 2'd1];
+            ifm00_w[7:0]     = window[1][col_inblk_r][7:0];        // ch 0 @ byte 0
+            ifm00_w[79:72]   = window[1][col_inblk_r][15:8];       // ch 1 @ byte 9
+            ifm00_w[151:144] = window[1][col_inblk_r][23:16];      // ch 2 @ byte 18
+            ifm00_w[223:216] = window[1][col_inblk_r][31:24];      // ch 3 @ byte 27
+
+            ifm01_w[7:0]     = window[1][col_inblk_r + 2'd1][7:0];
+            ifm01_w[79:72]   = window[1][col_inblk_r + 2'd1][15:8];
+            ifm01_w[151:144] = window[1][col_inblk_r + 2'd1][23:16];
+            ifm01_w[223:216] = window[1][col_inblk_r + 2'd1][31:24];
+
+            ifm10_w[7:0]     = window[2][col_inblk_r][7:0];
+            ifm10_w[79:72]   = window[2][col_inblk_r][15:8];
+            ifm10_w[151:144] = window[2][col_inblk_r][23:16];
+            ifm10_w[223:216] = window[2][col_inblk_r][31:24];
+
+            ifm11_w[7:0]     = window[2][col_inblk_r + 2'd1][7:0];
+            ifm11_w[79:72]   = window[2][col_inblk_r + 2'd1][15:8];
+            ifm11_w[151:144] = window[2][col_inblk_r + 2'd1][23:16];
+            ifm11_w[223:216] = window[2][col_inblk_r + 2'd1][31:24];
         end
     end
 
