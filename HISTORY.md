@@ -69,6 +69,7 @@ OFM  : 0x00C00000 →
 | l10_verify_tb | 0          | 660 mismatch | 10 layer 누적 propagation (=2%) |
 | l11_verify_tb | 0          | 0 mismatch   | POOL_S1, max pool 이 propagation 흡수 |
 | l12_verify_tb | 0          | 0 mismatch    | CONV1x1, RTL REPACK + L11 maxpool 흡수 효과 지속 |
+| l13_verify_tb | 0          | 0 mismatch    | CONV3x3 (L10 구조 재사용), L12→L13 RTL REPACK |
 
 모든 standalone PASS → RTL 자체 버그 없음.
 Chain mismatch 는 모두 ±1 LSB 수준의 양자화 차이 propagation 으로 추정 (Δ 분포 통계 측정 진행 중).
@@ -144,3 +145,25 @@ Chain mismatch 는 모두 ±1 LSB 수준의 양자화 차이 propagation 으로 
   - Phase A : 0 / 16,384 (변화 없음)
   - **Phase B : 0 / 16,384** — L11 maxpool 의 propagation 흡수 효과가 L12 까지 이어짐
 - 시뮬 시간: L0→L12 chain 153 ms sim time (wall time ~11분 Vivado)
+
+#### 8차 — L13 (CONV3x3, Ci=256 Co=512) 추가 (2026-05-23 추가)
+
+- L13 conv 는 L10 와 동일 구조 (Ci=256, Co=512, 3×3, acc_len=64) — 검증된 3×3 path 재사용
+- yolo_engine 변경:
+  - L13 파라미터 추가 (blk_off=76432, bias_off=1264, OFM @ 0x308000, IFM @ 0x304000)
+  - `is_conv_l13` + conv mux 확장 (cur_w/h/co/acc_len/shift/ci_grps/eir_per_row 등)
+  - DRAM addr mux (wgt/bias/ifm/ofm base) L13 case
+  - L13 의 OFM stride 는 L10/L12 와 동일 (8×8 OFM, 4×4 block)
+- **REPACK FSM 일반화** — L11→L12 와 L12→L13 둘 다 동일 state path 사용:
+  - 신규 mux wires: `cur_rp12_in_base`, `cur_rp12_out_base`, `cur_rp12_in_words`, `cur_rp12_cig_max`, `cur_rp12_entries_per_row`
+  - `conv_phase_r==12` → L11→L12 (Ci=512, ci_g_max=127, 8192 word)
+  - `conv_phase_r==13` → L12→L13 (Ci=256, ci_g_max=63,  4096 word)
+  - entry_idx 식: `row * entries_per_row + ci_g*2 + col_b` (entries_per_row layer 별 mux)
+- FSM 흐름:
+  - L11 STORE_WAIT → cp=12, L12 REPACK → L12 conv
+  - L12 conv done (cp==12) → cp=13, L13 REPACK → L13 conv
+  - L13 conv done (cp==13) → S_DONE
+- 검증 결과:
+  - Phase A : 0 / 32,768 (TB software REPACK)
+  - **Phase B : 0 / 32,768** — L11 maxpool 흡수 효과가 L13 까지 지속
+- 시뮬 시간: L0→L13 chain 181.5 ms sim time (wall time ~10분 Vivado)
