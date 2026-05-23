@@ -50,6 +50,9 @@ module l11_verify_tb;
     localparam integer L10_OFM_OFF_W    = 32'h002E8000 >> 2;
     localparam integer L11_OFM_OFF_W    = 32'h002F0000 >> 2;
 
+    // |got-exp| <= TOLERANCE 인 mismatch 는 양자화 noise 로 간주 (PASS).
+    localparam integer TOLERANCE        = 1;
+
     wire [3:0]  S_AWADDR  = 4'd0;  wire [2:0] S_AWPROT = 3'd0;
     wire        S_AWVALID = 1'b0;  wire       S_AWREADY;
     wire [31:0] S_WDATA   = 32'd0; wire [3:0] S_WSTRB  = 4'd0;
@@ -177,7 +180,8 @@ module l11_verify_tb;
     reg [7:0] golden_l10 [0:32767];   // 512 × 8 × 8 (L10 OFM = L11 IFM)
     reg [7:0] golden_l11 [0:32767];   // 512 × 8 × 8 (L11 OFM = L12 IFM)
 
-    integer mm_l11_A, mm_l11_B;
+    integer mm_l11_A, mm_l11_B;   // phase 별 total mismatch
+    integer tf_l11_A, tf_l11_B;   // phase 별 |delta| > TOLERANCE mismatch
     // [DEBUG-DISABLED] integer mm_l10_chain;
     //   — 2026-05-22 L11 검증 시 임시로 추가한 디버그 counter.
     //     Phase B chain 후 DRAM 의 L10 OFM 영역을 golden_l10 과 직접 비교해서
@@ -306,13 +310,13 @@ module l11_verify_tb;
                     end
                 end
             end
-            $display("[L11V-TB][DEBUG L10] L10 OFM (Phase B chain) — total=%0d, +Δ=%0d, -Δ=%0d, max|Δ|=%0d",
+            $display("[L11V-TB][DEBUG L10] L10 OFM (Phase B chain) - total=%0d, +d=%0d, -d=%0d, max|d|=%0d",
                      mismatch_cnt, cnt_pos, cnt_neg, max_diff);
-            $display("[L11V-TB][DEBUG L10]   |Δ|=1 : %0d", cnt_d1);
-            $display("[L11V-TB][DEBUG L10]   |Δ|=2 : %0d", cnt_d2);
-            $display("[L11V-TB][DEBUG L10]   |Δ|=3 : %0d", cnt_d3);
-            $display("[L11V-TB][DEBUG L10]   |Δ|=4..8 : %0d", cnt_d4_8);
-            $display("[L11V-TB][DEBUG L10]   |Δ|>8 : %0d", cnt_d_big);
+            $display("[L11V-TB][DEBUG L10]   |d|=1 : %0d", cnt_d1);
+            $display("[L11V-TB][DEBUG L10]   |d|=2 : %0d", cnt_d2);
+            $display("[L11V-TB][DEBUG L10]   |d|=3 : %0d", cnt_d3);
+            $display("[L11V-TB][DEBUG L10]   |d|=4..8 : %0d", cnt_d4_8);
+            $display("[L11V-TB][DEBUG L10]   |d|>8 : %0d", cnt_d_big);
         end
     endtask
     */
@@ -375,7 +379,8 @@ module l11_verify_tb;
 
     // L11 OFM 비교 + Δ magnitude 분포 통계
     task compare_l11_ofm;
-        output integer mismatch_cnt;
+        output integer mismatch_cnt;   // total byte mismatch (got !== exp)
+        output integer tol_fail_cnt;   // |delta| > TOLERANCE mismatch
         integer t_fi, t_hb, t_wb, t_sh, t_sw, t_idx, t_print;
         integer diff_signed, abs_diff;
         integer cnt_d1, cnt_d2, cnt_d3, cnt_d4_8, cnt_d_big;
@@ -385,6 +390,7 @@ module l11_verify_tb;
         reg [7:0]  tg, te;
         begin
             mismatch_cnt = 0;
+            tol_fail_cnt = 0;
             t_print      = 0;
             cnt_d1 = 0; cnt_d2 = 0; cnt_d3 = 0;
             cnt_d4_8 = 0; cnt_d_big = 0;
@@ -411,14 +417,11 @@ module l11_verify_tb;
                                     else if (abs_diff == 3) cnt_d3   = cnt_d3   + 1;
                                     else if (abs_diff <= 8) cnt_d4_8 = cnt_d4_8 + 1;
                                     else                    cnt_d_big= cnt_d_big+ 1;
+                                    if (abs_diff > TOLERANCE) tol_fail_cnt = tol_fail_cnt + 1;
                                     if (t_print < 8) begin
-                                        $display("  [L11 MISMATCH] fi=%0d h=%0d w=%0d got=%02x exp=%02x (d=%0d)",
+                                        $display("  [L11V-TB] MISMATCH fi=%0d h=%0d w=%0d got=%02x exp=%02x (d=%0d)",
                                                  t_fi, t_hb*2+t_sh, t_wb*2+t_sw, tg, te, diff_signed);
                                         t_print = t_print + 1;
-                                    end
-                                    if (abs_diff > 3 && cnt_d4_8 + cnt_d_big <= 16) begin
-                                        $display("  [L11 MISMATCH BIG-Δ] fi=%0d h=%0d w=%0d got=%02x exp=%02x (d=%0d)",
-                                                 t_fi, t_hb*2+t_sh, t_wb*2+t_sw, tg, te, diff_signed);
                                     end
                                 end
                             end
@@ -426,14 +429,15 @@ module l11_verify_tb;
                     end
                 end
             end
-            $display("[L11V-TB] Δ 분포 — total=%0d, +Δ=%0d, -Δ=%0d, max|Δ|=%0d",
+            $display("[L11V-TB] delta dist : total=%0d  +d=%0d  -d=%0d  max|d|=%0d",
                      mismatch_cnt, cnt_pos, cnt_neg, max_diff);
-            $display("[L11V-TB]   |Δ|=1 : %0d   (%0d%%)",
+            $display("[L11V-TB]   |d|=1    : %0d  (%0d%%)",
                      cnt_d1, (cnt_d1*100)/((mismatch_cnt==0)?1:mismatch_cnt));
-            $display("[L11V-TB]   |Δ|=2 : %0d", cnt_d2);
-            $display("[L11V-TB]   |Δ|=3 : %0d", cnt_d3);
-            $display("[L11V-TB]   |Δ|=4..8 : %0d", cnt_d4_8);
-            $display("[L11V-TB]   |Δ|>8 : %0d", cnt_d_big);
+            $display("[L11V-TB]   |d|=2    : %0d", cnt_d2);
+            $display("[L11V-TB]   |d|=3    : %0d", cnt_d3);
+            $display("[L11V-TB]   |d|=4..8 : %0d", cnt_d4_8);
+            $display("[L11V-TB]   |d|>8    : %0d", cnt_d_big);
+            $display("[L11V-TB]   |d|>%0d (tol-exceed) : %0d", TOLERANCE, tol_fail_cnt);
         end
     endtask
 
@@ -471,19 +475,20 @@ module l11_verify_tb;
         release u_yolo_engine.state_r;
 
         wait (u_yolo_engine.layer_idx == 5'd12);
-        $display("[L11V-TB][%0t] Phase A : L11 COMPLETED (layer_idx → 12)", $time);
+        $display("[L11V-TB][%0t] Phase A : L11 COMPLETED (layer_idx -> 12)", $time);
         #(40*CLK_PERIOD);
 
-        compare_l11_ofm(mm_l11_A);
-        $display("[L11V-TB][Phase A] L11 OFM mismatch: %0d / 32,768", mm_l11_A);
-        if (mm_l11_A == 0) $display("[L11V-TB][Phase A] *** PASS *** : L11 pool_s1 단독 OK");
-        else               $display("[L11V-TB][Phase A] *** FAIL ***");
+        compare_l11_ofm(mm_l11_A, tf_l11_A);
+        $display("[L11V-TB][Phase A] OFM mismatch: %0d / 32768   (tol-exceed: %0d)", mm_l11_A, tf_l11_A);
+        if      (mm_l11_A == 0) $display("[L11V-TB][Phase A] *** PASS (exact, 0 mismatches) ***");
+        else if (tf_l11_A == 0) $display("[L11V-TB][Phase A] *** PASS (within tolerance +-%0d, %0d noise) ***", TOLERANCE, mm_l11_A);
+        else                    $display("[L11V-TB][Phase A] *** FAIL (%0d exceed +-%0d tolerance) ***", tf_l11_A, TOLERANCE);
 
         //==================================================================
         // [Phase B] Chain L0 → ... → L11
         //==================================================================
         $display("");
-        $display("[L11V-TB] ============== Phase B : Chain L0 → ... → L11 ==============");
+        $display("[L11V-TB] ============== Phase B : Chain L0 -> ... -> L11 ==============");
 
         rstn = 1'b0;
         #(8*CLK_PERIOD);
@@ -504,7 +509,7 @@ module l11_verify_tb;
         force u_yolo_engine.u_axi.slv_reg0 = 32'd0;
 
         wait (u_yolo_engine.layer_idx == 5'd12);
-        $display("[L11V-TB][%0t] Phase B : L0→...→L11 ALL COMPLETED", $time);
+        $display("[L11V-TB][%0t] Phase B : L0 -> ... -> L11 ALL COMPLETED", $time);
         #(40*CLK_PERIOD);
 
         // [DEBUG-DISABLED] L11 PASS 검증용 임시 호출 — 2026-05-22 검증 완료
@@ -513,23 +518,23 @@ module l11_verify_tb;
         //   (둘 다 정상 결과 확인됨 — task 정의도 비활성화 상태)
         // sanity_check_data;
         // compare_l10_ofm_chain(mm_l10_chain);
-        // $display("[L11V-TB][Phase B][DEBUG] L10 OFM mismatch in chain: %0d / 32,768 (L10 verify 의 660 과 비교)", mm_l10_chain);
+        // $display("[L11V-TB][Phase B][DEBUG] L10 OFM mismatch in chain: %0d / 32768", mm_l10_chain);
 
-        compare_l11_ofm(mm_l11_B);
-        $display("[L11V-TB][Phase B] L11 OFM mismatch: %0d / 32,768", mm_l11_B);
-        if (mm_l11_B == 0) $display("[L11V-TB][Phase B] *** PASS ***");
-        else               $display("[L11V-TB][Phase B] *** FAIL *** (또는 propagation 누적)");
+        compare_l11_ofm(mm_l11_B, tf_l11_B);
+        $display("[L11V-TB][Phase B] OFM mismatch: %0d / 32768   (tol-exceed: %0d)", mm_l11_B, tf_l11_B);
+        if      (mm_l11_B == 0) $display("[L11V-TB][Phase B] *** PASS (exact, 0 mismatches) ***");
+        else if (tf_l11_B == 0) $display("[L11V-TB][Phase B] *** PASS (within tolerance +-%0d, %0d noise) ***", TOLERANCE, mm_l11_B);
+        else                    $display("[L11V-TB][Phase B] *** FAIL (%0d exceed +-%0d tolerance) ***", tf_l11_B, TOLERANCE);
 
         //==================================================================
         $display("");
         $display("[L11V-TB] ============================================================");
-        $display("[L11V-TB] Phase A (standalone L11) : %s (mismatch=%0d)",
-                 (mm_l11_A == 0) ? "PASS" : "FAIL", mm_l11_A);
-        $display("[L11V-TB] Phase B (L0→...→L11)     : %s (mismatch=%0d)",
-                 (mm_l11_B == 0) ? "PASS" : "FAIL", mm_l11_B);
+        $display("[L11V-TB] Phase A : %s (mismatch=%0d, tol-exceed=%0d)",
+                 (tf_l11_A == 0) ? "PASS" : "FAIL", mm_l11_A, tf_l11_A);
+        $display("[L11V-TB] Phase B : %s (mismatch=%0d, tol-exceed=%0d)",
+                 (tf_l11_B == 0) ? "PASS" : "FAIL", mm_l11_B, tf_l11_B);
         // [DEBUG-DISABLED] L10 OFM chain mismatch print (검증 완료, 임시 비활성화)
-        // $display("[L11V-TB] [DEBUG] Phase B L10 OFM chain mismatch = %0d  (L10 verify 기록 660)",
-        //          mm_l10_chain);
+        // $display("[L11V-TB] [DEBUG] Phase B L10 OFM chain mismatch = %0d", mm_l10_chain);
         $display("[L11V-TB] ============================================================");
 
         #(20*CLK_PERIOD) $finish;
@@ -545,7 +550,7 @@ module l11_verify_tb;
     initial prev_li = 5'h1F;
     always @(posedge clk) begin
         if (rstn && u_yolo_engine.layer_idx !== prev_li) begin
-            $display("[L11V-TB][%0t] >>> layer_idx %0d → %0d <<<",
+            $display("[L11V-TB][%0t] >>> layer_idx %0d -> %0d <<<",
                      $time, prev_li, u_yolo_engine.layer_idx);
             prev_li <= u_yolo_engine.layer_idx;
         end

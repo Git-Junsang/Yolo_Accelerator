@@ -29,6 +29,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Claude Code 는 **Linux code-server** 에서 실행되므로, 쉘 명령은 Linux 명령 사용.
 - Vivado TCL 콘솔 명령은 Windows 에서 직접 실행 (Claude Code 에서 실행 불가).
 - TB hex 데이터 경로가 Windows 절대경로로 하드코딩된 경우 Linux 경로로 수정 또는 symlink 생성.
+- **시뮬레이션 검증은 Vivado 2025 사용** (필수). Vivado 2021 은 uninitialized memory(X) 처리가 2025 와 달라, chain 검증에서 동일 RTL/데이터인데도 ±1 LSB 비결정성(mismatch)이 발생함 (§4-8 참조). 2025 프로젝트 생성: `yolohw/fpga/create_project_25.tcl`.
 
 ---
 
@@ -58,6 +59,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 5. **SystemVerilog 구문 금지**: `fork`, `join_any`, `let` 등은 Vivado plain Verilog 합성에서 실패. `while` 폴링 루프 또는 plain Verilog 로 대체.
 6. **디스크 용량 초과 방지**: Vivado 시뮬레이션 시 `log_all_signals` 옵션 반드시 OFF. `.xilwvdat` 파일 폭증 방지.
 7. **Bias 부호 확장**: 16-bit hex bias 를 32-bit SPRAM 에 적재 시 단순 zero-extend 아닌 **sign-extend** (`{ {16{bias[15]}}, bias }`).
+8. **sim 메모리 0 초기화 + Vivado 2025 검증**: sim behavioral 메모리(`dpram_wrapper`/`spram_wrapper`/`ifm_line_buf`/`gbuff_param` 의 `ifdef FPGA` else 영역의 reg 배열 + read latency reg)는 반드시 `initial` 로 0 초기화. 미초기화 시 chain 검증에서 시뮬레이터 버전(2021 vs 2025)마다 X 전파가 달라 ±1 LSB mismatch 발생 (RTL 버그 아님). 0 초기화는 실제 FPGA BRAM(전원 인가 시 0)과 일치하며, `initial` 은 sim 전용이라 합성/fps/Energy 에 영향 없음.
 
 ---
 
@@ -79,16 +81,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 6. 활성 파일 구조 (Phase 3 완료 시점)
 
 ```
-yolohw/src/        — 활성 RTL (18 파일, 합성 가능, legacy 전부 제거됨)
-yolohw/testbench/  — 활성 TB (13 파일) + hex 데이터 폴더 + sim_dram_model
+yolohw/src/        — 활성 RTL (19 .v: yolo_engine + 17 서브모듈 + define.v stub)
+yolohw/testbench/  — 활성 TB (l0~l20 verify + 블록 TB) + hex 데이터(inout_data_sw) + sim_dram_model
 yolohw/sim/        — iverilog 컴파일 출력 전용 (.gitignore, 빌드 산출물)
 yolohw/firmware/   — host.py (Host PC UART 클라이언트)
-yolohw/fpga/       — Vivado 프로젝트 + BMG IP TCL + Vitis firmware
+yolohw/fpga/       — Vivado 프로젝트(2025) + BMG IP TCL + Vitis firmware
 skeleton/          — C 골든 레퍼런스 + 양자화 hex 생성기 (Linux에서 빌드)
+documents/         — 강의자료 / 논문 / 참고 자료
 .recycle_bin/      — 소프트 삭제 보관함 (.recycle_bin/REASON.md 참조)
 ```
 
-**`yolohw/src/` 18 파일 전부 합성 대상** — legacy 파일 없음. Vivado 소스 목록에 src/ 전체 포함 가능.
+**`yolohw/src/` 전부 합성 대상** — legacy 파일 없음. `define.v` 는 `mul.v` 참조용 include stub (실제 매크로는 `user_define_h.v`). 산술 multiplier 는 `mul.v` 단일 (mul_dual.v 등 없음).
 
 ---
 

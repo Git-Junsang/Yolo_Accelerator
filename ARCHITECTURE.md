@@ -11,6 +11,8 @@
 | **Phase 3** | MicroBlaze + UART + DDR2 통합 | ✅ 코드 완성 / 보드 통합 대기 |
 | Phase 4 | 비트스트림 + 보드 데모 + 측정 | 대기 |
 
+> **시뮬레이션 검증 환경 (중요)**: 모든 chain 검증은 **Vivado 2025** 로 수행합니다. Vivado 2021 은 uninitialized 메모리(X) 처리가 2025 와 달라, 동일 RTL·데이터·TB 에서도 chain 검증 시 ±1 LSB 비결정성(mismatch)이 발생합니다. 이를 근본 차단하기 위해 sim behavioral 메모리(`dpram_wrapper`/`spram_wrapper`/`ifm_line_buf`/`gbuff_param`)의 reg 배열과 read latency 레지스터는 `initial` 로 0 초기화되어 있습니다(실제 FPGA BRAM 의 0 초기화와 일치). 이 `initial` 은 `ifdef FPGA` else(sim) 영역에만 있어 합성·fps·Energy 에는 전혀 영향이 없습니다.
+
 ## 1. 하드웨어 / 소프트웨어 역할 분담
 
 - **하드웨어 (RTL, Phase 2 완료)**: Conv(3×3, 1×1), Bias + Descaling, ReLU, MaxPool(stride 2 / stride 1), Upsample, Route(DMA 주소 제어)
@@ -38,7 +40,7 @@
 ## 3. YOLO Engine 내부 모듈 구조 (Phase 1 완료 시점)
 
 ```text
-yolo_engine.v ★ TOP — 22-layer 자동 추론 FSM (14 states)
+yolo_engine.v ★ TOP — 22-layer 자동 추론 FSM (53 states: conv/pool/REPACK/L11 s1-pool/L18 upsample)
 │
 ├── yolo_engine_axi.v             ← AXI4-Lite slave (ctrl_reg0~3 / network_done)
 │
@@ -95,7 +97,7 @@ yolo_engine.v ★ TOP — 22-layer 자동 추론 FSM (14 states)
 | L16, L19 | Route | (no module — FSM skip + software DRAM 사전 배치) |
 | L15, L21 | YOLO output | (no module — FSM skip, software 후처리) |
 
-## 4. Top FSM 흐름 (yolo_engine.v, 14 states)
+## 4. Top FSM 흐름 (yolo_engine.v, 53 states — 아래는 개념적 흐름, 실제 state 명은 `S_LOAD_BIAS`/`S_RB_DMA_IFM`/`S_RP_*`/`S_L11_*`/`S_L18_*` 등)
 
 ```
 ST_IDLE → (ap_start) → ST_INIT
@@ -165,16 +167,20 @@ ST_DONE          → network_done assert
 Yolo_Accelerator/
 ├── ARCHITECTURE.md          (본 문서)
 ├── CLAUDE.md                (작업 가이드 + 치명적 규칙)
-├── HANDOFF.md               (세션 핸드오프 노트)
+├── README.md                (프로젝트 개요)
+├── HISTORY.md               (검증 진행 기록)
 ├── skeleton/                (C 골든 레퍼런스, hex 파일 생성기)
+├── documents/               (강의자료 / 논문 / 참고 자료)
 ├── .recycle_bin/            (소프트 삭제 보관함, REASON.md 참조)
 └── yolohw/
-    ├── fpga/                Vivado 프로젝트 + BMG IP TCL + Vitis firmware
+    ├── fpga/                Vivado 프로젝트 (2025) + BMG IP TCL + Vitis firmware
     ├── firmware/            host.py (Host PC UART 클라이언트)
-    ├── src/                 활성 RTL (18 파일, legacy 제거 완료)
-    ├── testbench/           활성 TB (13 파일) + hex 데이터 + sim_dram_model
+    ├── src/                 활성 RTL (19 .v — yolo_engine 외 18 모듈 + define.v stub)
+    ├── testbench/           활성 TB (l0~l20 verify + 블록 TB) + hex 데이터(inout_data_sw) + sim_dram_model
     └── sim/                 iverilog 컴파일 출력 전용 (.gitignore)
 ```
+
+- `HANDOFF.md` 는 폐기됨 (2026-05-22). 진행 상태는 `HISTORY.md` + 메모리(`project_current_state.md`) 참조.
 
 ## 8. Phase 1 알려진 한계 / Phase 2 점검 대상
 

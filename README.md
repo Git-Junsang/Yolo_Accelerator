@@ -2,7 +2,7 @@
 
 [![Phase](https://img.shields.io/badge/Phase-2%20TB%20Verified-brightgreen)]()
 [![Board](https://img.shields.io/badge/Board-Nexys%20A7--100T-blue)]()
-[![Tool](https://img.shields.io/badge/Vivado-2020.2+-orange)]()
+[![Tool](https://img.shields.io/badge/Vivado-2025%20(sim%20검증)-orange)]()
 [![License](https://img.shields.io/badge/License-Academic-lightgrey)]()
 
 > **중앙대학교 AIX2026 Deep Learning Hardware 설계 경진대회** 출품작
@@ -42,33 +42,31 @@
 ## 2. 디렉토리 구조
 
 ```
-AIX Project/
+Yolo_Accelerator/
 ├── README.md                ◀ 본 문서
 ├── CLAUDE.md                작업 가이드 + 치명적 규칙
 ├── ARCHITECTURE.md          상세 아키텍처 스펙
-├── HANDOFF.md               세션 핸드오프 노트
+├── HISTORY.md               검증 진행 기록
 │
 ├── skeleton/                C 골든 레퍼런스 + hex 파일 생성기
 │   └── bin/
-│       ├── script-wins-aix2024-test-one-quantized.cmd
-│       └── log_feamap/, log_param/  (생성된 hex 파일)
+│       ├── log_feamap/, log_param/  (생성된 hex 파일)
+│       └── *.weights / *.cfg / aix2024.names
 │
-├── 참고자료/                강의자료 / 논문 / 데모 자료
+├── documents/               강의자료 / 논문 / 참고 자료
+├── .recycle_bin/            📦 소프트 삭제 보관함 (REASON.md 참조)
 │
 └── yolohw/                  ◀ 핵심 RTL/시뮬레이션 디렉토리
-    ├── src/                 ★ 활성 RTL — 19 파일
-    ├── sim/                 ★ 활성 TB — 5 파일 + hex 데이터 폴더
-    │   ├── inout_data_sw/   C 레퍼런스 출력 hex
-    │   ├── inout_data_hw/   하드웨어 출력 (시뮬 캡쳐)
-    │   ├── input_data/      입력 이미지 hex
+    ├── src/                 ★ 활성 RTL — 19 .v (yolo_engine + 17 서브모듈 + define.v stub)
+    ├── testbench/           ★ 활성 TB — l0~l20 verify + 블록 TB
+    │   ├── inout_data_sw/   C 레퍼런스 출력 hex (gen_*.mem, log_feamap, log_param)
     │   └── sim_dram_model/  AXI slave DRAM 모델
-    ├── fpga/                Vivado 프로젝트 + BMG IP TCL
-    ├── src_backup/          📦 legacy RTL (참조용)
-    ├── sim_backup/          📦 legacy TB (참조용)
-    └── _archive/            📦 옛 스크린샷 / 초안 자료
+    ├── sim/                 iverilog 컴파일 출력 전용 (.gitignore)
+    ├── fpga/                Vivado 프로젝트(2025) + BMG IP TCL + Vitis firmware
+    └── firmware/            host.py (Host PC UART 클라이언트)
 ```
 
-**합성 / 시뮬 대상은 `yolohw/src/` + `yolohw/sim/` 만**. `*_backup` 과 `_archive` 는 보존용입니다.
+**합성 / 시뮬 대상은 `yolohw/src/` + `yolohw/testbench/` 만**. legacy 파일은 `.recycle_bin/` 에 보관됩니다 (`HANDOFF.md` 는 2026-05-22 폐기 — 진행 상태는 HISTORY.md 참조).
 
 ---
 
@@ -99,8 +97,7 @@ yolo_engine.v ★ TOP — 22-layer 자동 추론 FSM
 │   └── mac_kern.v                144-MAC + 4× accumulator + 4× post_process
 │       │
 │       ├── mac_stack.v           36 mul × 4 spatial = 144 MAC
-│       │   ├── mul_dual.v        DSP48 packing (2 곱셈 동시) × ~72
-│       │   │   └── mul.v         8-bit signed multiplier
+│       │   ├── mul.v × 144       8-bit signed multiplier (INT8×INT8→INT16)
 │       │   └── add_tree_36in.v × 4
 │       │
 │       └── post_process.v × 4    bias + ReLU + arith shift + UINT8 clip
@@ -130,7 +127,7 @@ yolo_engine.v ★ TOP — 22-layer 자동 추론 FSM
 
 | 파일 | 역할 | 비고 |
 |------|------|------|
-| **yolo_engine.v** | 22-layer 자동 추론 top. 14-state FSM, per-layer DRAM offset table, 5-way OFM dpram port mux | ap_start 1 회 → network_done |
+| **yolo_engine.v** | 22-layer 자동 추론 top. 53-state FSM, per-layer DRAM offset table, 5-way OFM dpram port mux | ap_start 1 회 → network_done |
 
 ### 🚌 AXI 인터페이스
 
@@ -144,8 +141,7 @@ yolo_engine.v ★ TOP — 22-layer 자동 추론 FSM
 
 | 파일 | 역할 |
 |------|------|
-| **mul.v** | 8-bit signed multiplier (DSP48 추론 가능) |
-| **mul_dual.v** | DSP48 1 개로 `a×c + b×c` 2 곱셈 동시 처리 |
+| **mul.v** | 8-bit signed multiplier (INT8×INT8→INT16, DSP48 추론). genvar 144 인스턴스 |
 | **add_tree_36in.v** | 36-input signed adder tree |
 | **mac_stack.v** | 36 mul × 4 spatial set (ifm_00/01/10/11) → 4 partial sum |
 | **mac_kern.v** | mac_stack + 4 × 32-bit accumulator + 4 × post_process → 한 cycle 4 픽셀 (2×2 OFM block) |
@@ -260,7 +256,7 @@ yolo_engine.v ★ TOP — 22-layer 자동 추론 FSM
 
 ## 6. 동작 과정 (Top FSM)
 
-`yolo_engine.v` 의 14-state FSM 이 22-layer 를 자동 순회합니다:
+`yolo_engine.v` 의 다단계 FSM (현재 53 state: conv/pool/REPACK/L11 pool_s1/L18 upsample 등) 이 22-layer 를 자동 순회합니다. 아래는 **개념적 흐름**이며, 실제 state 명은 `S_LOAD_BIAS`/`S_RB_DMA_IFM`/`S_FI_LOAD_WGT`/`S_RP_*`/`S_L11_*`/`S_L18_*` 등입니다:
 
 ```
 ST_IDLE
@@ -352,7 +348,7 @@ ST_DMA_OFM_WAIT                                   │
 
 ### ✅ Phase 1 완료 사항
 
-- 22-layer 자동 추론 FSM 완성 (14-state)
+- 22-layer 자동 추론 FSM 완성 (53-state)
 - 144-MAC array + 4 spatial set output
 - 3×3 / 1×1 conv 모두 동일 mac_kern 재사용
 - stride-1 maxpool (L11) 전용 모듈
@@ -366,8 +362,9 @@ ST_DMA_OFM_WAIT                                   │
 - **`mul.v` IFM 부호 수정**: `$signed({1'b0,x})` → `$signed(x)` (UINT8 → INT8 signed). conv_top_tb mismatch 31 → **0**
 - **`yolo_engine.v` lyr_shift 전수 수정**: scale 파일 실측 적용 (L0: 8, L2~L20: 6). yolo_engine_tb OFM all-zero → **non-zero 확인**
 - **`skeleton/src/additionally.c`** Windows 하드코딩 경로 → 상대경로 (Linux make 빌드 정상화)
-- SW 골든 hex 단일 실행 기준으로 재생성 및 `yolohw/sim/inout_data_sw/` 동기화
+- SW 골든 hex 단일 실행 기준으로 재생성 및 `yolohw/testbench/inout_data_sw/` 동기화
 - `yolo_engine_tb`: 22-layer 완주 + network_done 수신 확인
+- **L0~L18 layer-by-layer chain 검증 완료** (l0~l18 verify_tb, Vivado 2025 기준 0 mismatch). L19(ROUTE concat)+L20(detection) 진행 중. 상세는 `HISTORY.md` 참조
 
 ### ⏳ Phase 3 남은 작업
 
@@ -387,7 +384,7 @@ ST_DMA_OFM_WAIT                                   │
 
 ### 사전 준비
 
-1. Vivado 2020.2 이상 설치
+1. Vivado 2025 설치 (시뮬 검증 기준. 2021 등 구버전은 chain 검증 시 X 처리 차이로 mismatch 발생 — §8/HISTORY.md 참조)
 2. Windows 절대경로 호환을 위해 정션 생성:
    ```cmd
    mklink /J C:\yolohw "C:\AIX Project\yolohw"
@@ -435,7 +432,9 @@ set_property top yolo_engine_tb    [get_filesets sim_1]
 launch_simulation
 ```
 
-⚠️ **`log_all_signals` 옵션은 OFF 유지** (디스크 폭증 방지).
+⚠️ **`log_all_signals` 옵션은 OFF 유지** (디스크 폭증 방지. `.wdb` 파형이 TB 당 수백 MB 까지 쌓임).
+
+⚠️ **chain 검증은 Vivado 2025 사용**. Vivado 2021 은 uninitialized 메모리(X) 처리가 달라, 동일 RTL·데이터인데도 chain 검증에서 ±1 LSB mismatch 가 발생합니다. sim behavioral 메모리는 `initial` 0 초기화되어 있으나(실제 BRAM 과 일치), 시뮬레이터 버전 통일을 위해 2025 기준으로 검증합니다. 2025 프로젝트 생성: `yolohw/fpga/create_project_25.tcl`. (자세한 내용: HISTORY.md 2026-05-24)
 
 ---
 
@@ -443,7 +442,7 @@ launch_simulation
 
 ### 코드 수정 전 필독
 
-`CLAUDE.md` 의 **치명적 에러 방지 규칙 7 가지** 를 반드시 읽고 작업.
+`CLAUDE.md` 의 **치명적 에러 방지 규칙 8 가지** 를 반드시 읽고 작업.
 
 ### 핵심 원칙
 
@@ -454,6 +453,7 @@ launch_simulation
 5. **SystemVerilog 구문 금지** — Vivado plain Verilog 합성 실패 (`fork`, `join_any`, `let` 등)
 6. **Bias sign-extend** — 16-bit hex → 32-bit 적재 시 `{ {16{b[15]}}, b }`
 7. **Layer 11 stride 1 별도 처리** — 다른 maxpool 과 같이 두면 안 됨
+8. **시뮬 검증은 Vivado 2025 + sim 메모리 0 초기화** — 2021 은 X 처리가 달라 chain ±1 LSB mismatch
 
 ### Phase 별 진입 권장 순서
 
@@ -466,7 +466,7 @@ Phase 를 건너뛰지 않습니다. Phase 2 mismatch 가 해결되지 않은 �
 ### 참고 문서
 
 - `ARCHITECTURE.md` — 상세 아키텍처 스펙
-- `HANDOFF.md` — 세션 핸드오프 노트
+- `HISTORY.md` — 검증 진행 기록 (layer-by-layer + Vivado 이슈)
 - `CLAUDE.md` — 작업 가이드 + 치명적 규칙
 
 ### 협업 흐름
@@ -486,4 +486,4 @@ Phase 를 건너뛰지 않습니다. Phase 2 mismatch 가 해결되지 않은 �
 
 ---
 
-**Last updated**: Phase 2 완료 시점 (2026-05-15 — mul.v INT8 수정, lyr_shift 실측 적용, yolo_engine_tb 22-layer 완주 확인)
+**Last updated**: 2026-05-24 — L0~L18 layer-by-layer chain 검증 완료 (Vivado 2025 기준 0 mismatch). Vivado 2021/2025 시뮬레이터 X 처리 차이 해결 (sim 메모리 0 초기화 + 2025 검증 환경 통일). 자세한 내용은 HISTORY.md 참조.

@@ -23,7 +23,7 @@ module l0_verify_tb;
 
 `ifdef FPGA
     initial begin
-        $display("[l0_verify_tb][FATAL] FPGA macro 활성. user_define_h.v 의 `define FPGA 주석 처리 필요.");
+        $display("[L0V-TB][FATAL] FPGA macro enabled.");
         $finish;
     end
 `else
@@ -214,7 +214,7 @@ module l0_verify_tb;
     //           (skeleton float vs RTL int)로 간주 → 무시.
     // 즉 TOLERANCE 초과 mismatch (= mm_tol_fail) 가 0 이면 PASS.
     //--------------------------------------------------------------
-    parameter TOLERANCE = 2;      // |got - exp| <= 2 까지 허용
+    parameter TOLERANCE = 1;      // |got - exp| <= 1 까지 허용
 
     integer mm_total;             // 엄격 (got != exp) 카운트
     integer mm_tol_fail;          // |diff| > TOLERANCE 인 mismatch (PASS 판정용)
@@ -233,6 +233,11 @@ module l0_verify_tb;
     integer mm_pos, mm_neg;        // diff 부호 통계 (got > exp vs got < exp)
     integer sum_diff;              // 평균 diff 추정
     integer mm_diff_hist [-8:8];   // diff 분포 (-8 ~ +8)
+
+    // unified delta-dist counters (l13 포맷)
+    integer cnt_d1, cnt_d2, cnt_d3, cnt_d4_8, cnt_d_big;
+    integer cnt_pos, cnt_neg;
+    integer max_diff;
 
     //--------------------------------------------------------------
     // Stimulus
@@ -259,7 +264,7 @@ module l0_verify_tb;
         for (i = 0; i < DRAM_WORDS; i = i + 1) dram[i] = 32'd0;
 
         // 2) .mem 적재 (Vivado xsim cwd 기준 6 ../)
-        $display("[l0_verify_tb] Loading DRAM .mem files...");
+        $display("[L0V-TB] Loading DRAM .mem files...");
         $readmemh("../../../../../../testbench/inout_data_sw/gen_wgt_dram.mem",
                   dram, 0, WGT_WORDS-1);
         $readmemh("../../../../../../testbench/inout_data_sw/gen_bias_dram.mem",
@@ -269,7 +274,7 @@ module l0_verify_tb;
         $readmemh("../../../../../../testbench/inout_data_sw/log_feamap/CONV00_output.hex",
                   golden);
 
-        $display("[l0_verify_tb] DRAM[0]=%08x  IFM[%0d]=%08x  GOLDEN[0]=%02x",
+        $display("[L0V-TB] DRAM[0]=%08x  IFM[%0d]=%08x  GOLDEN[0]=%02x",
                  dram[0], IFM_OFF_W, dram[IFM_OFF_W], golden[0]);
 
         // 3) AXI slave reg 강제 설정 (DRAM base 주소)
@@ -286,11 +291,11 @@ module l0_verify_tb;
         force u_dut.u_axi.slv_reg0 = 32'h0000_0001;
         @(posedge clk);
         force u_dut.u_axi.slv_reg0 = 32'h0000_0000;
-        $display("[l0_verify_tb][%0t] ap_start sent", $time);
+        $display("[L0V-TB][%0t] ap_start sent", $time);
 
         // 6) L0 완료 대기 (layer_idx 가 0 → 1 로 전이)
         wait (u_dut.layer_idx == 5'd1);
-        $display("[l0_verify_tb][%0t] L0 done (layer_idx → 1)", $time);
+        $display("[L0V-TB][%0t] L0 done (layer_idx -> 1)", $time);
         #(40*PERIOD);
 
         // 7) 비교
@@ -311,10 +316,13 @@ module l0_verify_tb;
     task compare_l0;
         integer fi, hb, wb, sub_h, sub_w;
         integer h, w, cb;
-        integer diff;
+        integer diff, abs;
         reg [31:0] dword;
         reg [7:0]  got, exp;
         begin
+            // unified delta-dist counters
+            cnt_d1 = 0; cnt_d2 = 0; cnt_d3 = 0; cnt_d4_8 = 0; cnt_d_big = 0;
+            cnt_pos = 0; cnt_neg = 0; max_diff = 0;
             for (fi = 0; fi < 16; fi = fi + 1) begin
                 for (hb = 0; hb < 128; hb = hb + 1) begin
                     for (wb = 0; wb < 128; wb = wb + 1) begin
@@ -347,6 +355,16 @@ module l0_verify_tb;
                                     // tolerance check (|diff| > TOLERANCE 면 PASS 불가)
                                     if ((diff > TOLERANCE) || (diff < -TOLERANCE))
                                         mm_tol_fail = mm_tol_fail + 1;
+                                    // unified delta-dist counting (l13 포맷)
+                                    abs = (diff < 0) ? -diff : diff;
+                                    if (diff > 0) cnt_pos = cnt_pos + 1;
+                                    else          cnt_neg = cnt_neg + 1;
+                                    if (abs > max_diff) max_diff = abs;
+                                    if      (abs == 1) cnt_d1   = cnt_d1   + 1;
+                                    else if (abs == 2) cnt_d2   = cnt_d2   + 1;
+                                    else if (abs == 3) cnt_d3   = cnt_d3   + 1;
+                                    else if (abs <= 8) cnt_d4_8 = cnt_d4_8 + 1;
+                                    else               cnt_d_big= cnt_d_big+ 1;
                                     if (!first_mm_found) begin
                                         first_mm_found = 1'b1;
                                         first_mm_fi  = fi;
@@ -355,9 +373,9 @@ module l0_verify_tb;
                                         first_mm_got = got;
                                         first_mm_exp = exp;
                                     end
-                                    if (mm_print_cnt < 32) begin
-                                        $display("  MM #%0d  fi=%0d  rb=%0d sub_h=%0d  cb=%0d sub_w=%0d  (h=%0d, w=%0d)  got=0x%02x  exp=0x%02x  diff=%0d",
-                                            mm_print_cnt, fi, hb, sub_h, cb, sub_w, h, w, got, exp, diff);
+                                    if (mm_print_cnt < 8) begin
+                                        $display("  [L0V-TB] MISMATCH fi=%0d h=%0d w=%0d got=%02x exp=%02x (d=%0d)",
+                                            fi, h, w, got, exp, diff);
                                         mm_print_cnt = mm_print_cnt + 1;
                                     end
                                 end
@@ -376,72 +394,30 @@ module l0_verify_tb;
         integer fi, rb, cb;
         integer non_cb0;
         begin
-            $display("");
-            $display("============================================================");
-            $display("[L0 RESULT] total mismatches = %0d / 1,048,576  (%.2f%%)",
-                mm_total, mm_total * 100.0 / 1048576.0);
-            $display("============================================================");
-
-            $display("");
-            $display("[mm per fi]");
-            for (fi = 0; fi < 16; fi = fi + 1)
-                if (mm_per_fi[fi] > 0)
-                    $display("    fi=%2d : %0d", fi, mm_per_fi[fi]);
-
-            $display("");
-            $display("[mm per rb] (where >0)");
-            for (rb = 0; rb < 128; rb = rb + 1)
-                if (mm_per_rb[rb] > 0)
-                    $display("    rb=%3d : %0d", rb, mm_per_rb[rb]);
-
-            $display("");
-            $display("[mm per cb] (where >0)");
-            for (cb = 0; cb < 128; cb = cb + 1)
-                if (mm_per_cb[cb] > 0)
-                    $display("    cb=%3d : %0d", cb, mm_per_cb[cb]);
-
+            // 미사용 경고 억제용 (bespoke 통계 변수는 더 이상 출력하지 않음)
             non_cb0 = mm_total - mm_cb_0_only;
-            $display("");
-            $display("[sub_h breakdown] sub_h=0 : %0d   sub_h=1 : %0d", mm_sub_h_0, mm_sub_h_1);
-            $display("[sub_w breakdown] sub_w=0 : %0d   sub_w=1 : %0d", mm_sub_w_0, mm_sub_w_1);
-            $display("[cb=0 only      ] %0d  (vs others %0d)", mm_cb_0_only, non_cb0);
-            $display("[diff sign      ] pos=%0d  neg=%0d  sum_diff=%0d", mm_pos, mm_neg, sum_diff);
 
-            // diff distribution (-8 .. +8)
-            $display("");
-            $display("[diff histogram]");
-            for (i = -8; i <= 8; i = i + 1)
-                if (mm_diff_hist[i] > 0)
-                    $display("    diff=%+0d : %0d", i, mm_diff_hist[i]);
+            // unified delta-dist block (l13 포맷)
+            $display("[L0V-TB] delta dist : total=%0d  +d=%0d  -d=%0d  max|d|=%0d",
+                     mm_total, cnt_pos, cnt_neg, max_diff);
+            $display("[L0V-TB]   |d|=1    : %0d  (%0d%%)",
+                     cnt_d1, (cnt_d1*100)/((mm_total==0)?1:mm_total));
+            $display("[L0V-TB]   |d|=2    : %0d", cnt_d2);
+            $display("[L0V-TB]   |d|=3    : %0d", cnt_d3);
+            $display("[L0V-TB]   |d|=4..8 : %0d", cnt_d4_8);
+            $display("[L0V-TB]   |d|>8    : %0d", cnt_d_big);
+            $display("[L0V-TB]   |d|>%0d (tol-exceed) : %0d", TOLERANCE, mm_tol_fail);
 
-            if (first_mm_found) begin
-                $display("");
-                $display("[first mm] fi=%0d h=%0d w=%0d got=0x%02x exp=0x%02x",
-                    first_mm_fi, first_mm_h, first_mm_w, first_mm_got, first_mm_exp);
-            end
+            $display("[L0V-TB][Result] OFM mismatch: %0d / 1048576   (tol-exceed: %0d)", mm_total, mm_tol_fail);
+            if      (mm_total == 0)    $display("[L0V-TB][Result] *** PASS (exact, 0 mismatches) ***");
+            else if (mm_tol_fail == 0) $display("[L0V-TB][Result] *** PASS (within tolerance +-%0d, %0d noise) ***", TOLERANCE, mm_total);
+            else                       $display("[L0V-TB][Result] *** FAIL (%0d exceed +-%0d tolerance) ***", mm_tol_fail, TOLERANCE);
 
-            // ====== PASS/FAIL 판정 ======
-            //   엄격: mm_total == 0
-            //   관대: |diff| <= TOLERANCE 인 mismatch 는 양자화 정의 차이로 무시
-            //         (skeleton float vs RTL int 차이)
-            //         → mm_tol_fail (|diff| > TOLERANCE) 가 0 이면 PASS
             $display("");
-            $display("============================================================");
-            $display("[L0 SUMMARY]");
-            $display("    Strict mismatches (got != exp)    : %0d / 1048576", mm_total);
-            $display("    Tolerance-exceeding (|diff| > %0d) : %0d", TOLERANCE, mm_tol_fail);
-            $display("============================================================");
-            if (mm_tol_fail == 0) begin
-                if (mm_total == 0)
-                    $display("[L0 RESULT] *** PASS (strict, 0 mismatches) ***");
-                else
-                    $display("[L0 RESULT] *** PASS (within tolerance ±%0d, %0d quantization noise) ***",
-                        TOLERANCE, mm_total);
-            end else begin
-                $display("[L0 RESULT] *** FAIL (%0d outputs exceed ±%0d tolerance) ***",
-                    mm_tol_fail, TOLERANCE);
-            end
-            $display("============================================================");
+            $display("[L0V-TB] ============================================================");
+            $display("[L0V-TB] L0 : %s (mismatch=%0d, tol-exceed=%0d)",
+                     (mm_tol_fail == 0) ? "PASS" : "FAIL", mm_total, mm_tol_fail);
+            $display("[L0V-TB] ============================================================");
         end
     endtask
 
@@ -450,7 +426,7 @@ module l0_verify_tb;
     //--------------------------------------------------------------
     initial begin
         repeat (2000) #(1_000_000);
-        $display("[l0_verify_tb] *** TIMEOUT (2 sec sim time) ***");
+        $display("[L0V-TB] *** TIMEOUT (2 sec sim time) ***");
         $finish;
     end
 

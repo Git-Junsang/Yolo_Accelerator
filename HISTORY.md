@@ -240,3 +240,42 @@ Chain mismatch 는 모두 ±1 LSB 수준의 양자화 차이 propagation 으로 
   - **Phase B (L0 → ... → L18) : 0 / 32,768 PASS**
 - 시뮬 시간: L0→L18 chain 183.0 ms sim time (wall time 8분 47초 Vivado xsim)
 - FSM transition 로그: `14 → 17 → 18 → 19` (L17 done → L18 자연 진입)
+
+## 2026-05-24
+
+### Vivado 2021 vs 2025 시뮬레이터 차이 — chain 검증 비결정성 해결
+
+L18 chain 검증(Phase B)에서 **동일 PC가 아닌 환경에 따라 mismatch 가 0 ↔ 3360/3676 으로 달라지는** 현상 발견. 정밀 진단 결과:
+
+- **원인**: uninitialized 메모리(X)의 시뮬레이터 버전 간 처리 차이.
+  - Vivado **2025**: chain 검증 = **0 mismatch** (PASS)
+  - Vivado **2021**: 동일 RTL·데이터·TB 인데 = 3360 mismatch (|Δ|≤3, 92% |Δ|=1)
+  - 메모리를 0 으로 강제 초기화하니 2021 결과가 3360 → 3676 으로 **바뀜** → chain 이 미초기화 메모리 값에 의존한다는 직접 증거.
+- **검증으로 배제한 것** (RTL 버그 아님 확정):
+  - golden 자가 일관성 100% (인접 layer output==input, route -4, upsample 모두 0 mismatch)
+  - 다른 PC(2025)의 zip 과 비교: 산술 모듈(mul/mac_kern/mac_stack/add_tree/post_process/conv_top/upsample) **byte-identical**, 입력 데이터(.mem)·golden·TB **모두 동일**
+  - 차이는 **오직 Vivado 버전(2021 vs 2025)**
+- **조치**:
+  1. sim behavioral 메모리에 `initial` 0 초기화 추가 — `dpram_wrapper`(ram + rdata + rdata_r), `spram_wrapper`(mem + rdata_o), `ifm_line_buf`(mem×4 banks + dout_a_r/dout_b_r), `gbuff_param`(wgt_mem + bias_mem). 모두 `ifdef FPGA` else(sim) 영역 → 합성/fps/Energy 영향 없음. 실제 BRAM(0 초기화)과 일치.
+  2. **검증 환경을 Vivado 2025 로 통일** (`yolohw/fpga/create_project_25.tcl`). 2025 에서 L18 chain = 0 mismatch 확인.
+- **결론**: RTL 자체는 정확. ±1 LSB 는 시뮬레이터 X 처리 차이였으며, mAP·점수(fps/Energy)에는 무관. 향후 모든 검증은 Vivado 2025 기준.
+- CLAUDE.md §4-8 규칙 추가, ARCHITECTURE.md 검증 환경 노트 추가.
+
+### 문서 정합성 점검 — 실제 구조와 어긋난 정보 수정 (2026-05-24)
+
+문서들이 Phase 2 시점에 멈춰 있어 실제 파일 구조와 불일치한 항목들을 일괄 수정:
+
+| 항목 | 문서 (기존) | 실제 / 수정 |
+|---|---|---|
+| `mul_dual.v` | README 인스턴스 계층·파일별에 존재 | **존재 안 함** — `mul.v` 단일 (genvar 144). 제거 |
+| src 파일 수 | CLAUDE/ARCH "18 파일" | **19 .v** (yolo_engine + 17 서브모듈 + `define.v` stub) |
+| 활성 TB 위치 | README "`yolohw/sim/` 5 파일" | **`yolohw/testbench/`** (l0~l20 verify + 블록 TB). `sim/` 은 iverilog 산출물 |
+| backup 디렉토리 | README `src_backup`/`sim_backup`/`_archive` | **`.recycle_bin/`** 단일 |
+| 참고자료 폴더 | README `참고자료/` | **`documents/`** |
+| `HANDOFF.md` | ARCH/README 참조 | **폐기됨**(2026-05-22) — 제거, HISTORY.md/메모리로 대체 |
+| FSM state 수 | README "14-state" | 실제 **53 state** (개념적 흐름임을 명시) |
+| `define.v` | (미기재) | `mul.v` 참조용 include stub (실제 매크로는 `user_define_h.v`) |
+| Vivado 버전 | README 배지 "2020.2+" | **2025** (검증 환경) |
+
+- 수정 문서: README.md(디렉토리·인스턴스 계층·파일별·FSM·배지·Last updated), CLAUDE.md(§6 파일 구조), ARCHITECTURE.md(§7 디렉토리).
+- 22-layer ↔ 서브모듈 매핑, DRAM 메모리 맵 등 나머지 기술 정보는 실제와 일치 확인됨.

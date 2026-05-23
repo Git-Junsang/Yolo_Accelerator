@@ -99,6 +99,15 @@ module gbuff_param(
     reg [71:0] wgt_mem  [0:4095];
     reg [31:0] bias_mem [0:2559];
 
+    // sim 재현성: uninitialized weight/bias 메모리(X) 로 인한 시뮬레이터 간 결과 차이 방지
+    integer gb_init_idx;
+    initial begin
+        for (gb_init_idx = 0; gb_init_idx < 4096; gb_init_idx = gb_init_idx + 1)
+            wgt_mem[gb_init_idx] = 72'd0;
+        for (gb_init_idx = 0; gb_init_idx < 2560; gb_init_idx = gb_init_idx + 1)
+            bias_mem[gb_init_idx] = 32'd0;
+    end
+
     // ----- Write -----
     always @(posedge clk) begin
         if (wr_wgt_en)  wgt_mem [wr_wgt_addr]  <= wr_wgt_data;

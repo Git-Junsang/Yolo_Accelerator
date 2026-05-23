@@ -186,6 +186,14 @@ module ifm_line_buf(
             reg [127:0] mem    [0:2047];
             reg [127:0] dout_a_r;
             reg [127:0] dout_b_r;
+            // sim 재현성: uninitialized line buffer(X) 로 인한 시뮬레이터 간 결과 차이 방지
+            integer lb_init_idx;
+            initial begin
+                for (lb_init_idx = 0; lb_init_idx < 2048; lb_init_idx = lb_init_idx + 1)
+                    mem[lb_init_idx] = 128'd0;
+                dout_a_r = 128'd0;   // read 레지스터 X 제거
+                dout_b_r = 128'd0;
+            end
             always @(posedge clk) begin
                 if (en_a_g) begin
                     if (we_a_g) mem[addr_a_g] <= i_dma_wr_data;

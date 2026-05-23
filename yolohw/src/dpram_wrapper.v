@@ -203,6 +203,15 @@ reg [DW-1 : 0] rdata;  // 내부 읽기 결과 레지스터
     // ──────────────────────────────────────────────────────────────
     reg [DW-1 : 0] ram[0:DEPTH-1];  // 메모리 셀 (reg 배열)
 
+    // sim 재현성: uninitialized RAM(X) 으로 인한 시뮬레이터/버전 간 결과 차이 방지.
+    //   X 상태가 chain 검증에서 ±1 LSB 비결정성을 유발하므로 0 으로 초기화.
+    //   (FPGA 합성 경로는 위 BMG IP 분기라 무관)
+    integer dpram_init_idx;
+    initial begin
+        for (dpram_init_idx = 0; dpram_init_idx < DEPTH; dpram_init_idx = dpram_init_idx + 1)
+            ram[dpram_init_idx] = {DW{1'b0}};
+    end
+
     // 쓰기: ena=1, wea=1 일 때 상승 에지에서 데이터 저장
     always @(posedge clk) begin
         if(ena) begin
@@ -215,6 +224,7 @@ reg [DW-1 : 0] rdata;  // 내부 읽기 결과 레지스터
         if(N_DELAY == 1) begin: delay_1
             // 1-cycle read latency (BMG "No Output Register" 동작)
             reg [DW-1:0] rdata;  // 1-cycle 지연 레지스터
+            initial rdata = {DW{1'b0}};   // sim 재현성: read 레지스터 X 제거
 
             always @(posedge clk) begin: read
                 if(enb) rdata <= ram[addrb];
@@ -224,6 +234,7 @@ reg [DW-1 : 0] rdata;  // 내부 읽기 결과 레지스터
         else begin: delay_n
             // N_DELAY 사이클 pipeline 지연
             reg [N_DELAY*DW-1:0] rdata_r;
+            initial rdata_r = {(N_DELAY*DW){1'b0}};   // sim 재현성: read 레지스터 X 제거
 
             // 1차 읽기 (포트 B)
             always @(posedge clk) begin: read

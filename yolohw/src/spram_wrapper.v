@@ -60,6 +60,7 @@ input  [DW-1 : 0]       wdata;  // 쓰기 데이터
 output [DW-1 : 0]       rdata;  // 읽기 데이터
 
 reg [DW-1 : 0] rdata_o;    // 내부 읽기 결과 레지스터
+initial rdata_o = {DW{1'b0}};   // sim 재현성: read 레지스터 X 제거
 
 // ──────────────────────────────────────────────────────────────
 // FPGA 합성 경로: BMG IP 인스턴스화
@@ -121,6 +122,13 @@ reg [DW-1 : 0] rdata_o;    // 내부 읽기 결과 레지스터
     // 시뮬레이션 경로: behavioral reg 배열 모델
     // ──────────────────────────────────────────────────────────────
     reg [DW-1 : 0] mem[0:DEPTH-1];  // 메모리 셀 (reg 배열)
+
+    // sim 재현성: uninitialized RAM(X) 로 인한 시뮬레이터/버전 간 결과 차이 방지
+    integer spram_init_idx;
+    initial begin
+        for (spram_init_idx = 0; spram_init_idx < DEPTH; spram_init_idx = spram_init_idx + 1)
+            mem[spram_init_idx] = {DW{1'b0}};
+    end
 
     // 쓰기: cs & we 가 모두 1일 때 상승 에지에서 데이터 저장
     always @(posedge clk) begin
