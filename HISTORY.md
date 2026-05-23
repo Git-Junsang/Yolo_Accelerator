@@ -71,6 +71,8 @@ OFM  : 0x00C00000 →
 | l12_verify_tb | 0          | 0 mismatch    | CONV1x1, RTL REPACK + L11 maxpool 흡수 효과 지속 |
 | l13_verify_tb | 0          | 0 mismatch    | CONV3x3 (L10 구조 재사용), L12→L13 RTL REPACK |
 | l14_verify_tb | 0          | 0 mismatch    | CONV1x1 detection layer (linear activation, INT8 raw output) |
+| l17_verify_tb | 0          | 0 mismatch    | L15 [yolo] + L16 [route -4] skip → L12→L17 RTL REPACK → CONV1x1 |
+| l18_verify_tb | 0          | 0 mismatch    | UPSAMPLE 2× (upsample_unit), L11 pool_s1 패턴과 동일 6-state 통합 |
 
 모든 standalone PASS → RTL 자체 버그 없음.
 Chain mismatch 는 모두 ±1 LSB 수준의 양자화 차이 propagation 으로 추정 (Δ 분포 통계 측정 진행 중).
@@ -192,3 +194,49 @@ Chain mismatch 는 모두 ±1 LSB 수준의 양자화 차이 propagation 으로 
 - **두 번째 결과** (i_relu_en 만 추가 후): 11966/12480 mismatch 중 |Δ|=1 이 98% — toward-zero rounding 차이로 1 LSB off-by-one
 - **세 번째 결과** (round-bias 추가 후): **0/12480 PASS** (Phase A, B 모두)
 - 시뮬 시간: L0→L14 chain 196 ms sim time (wall time ~10분 Vivado)
+
+#### 10차 — L15 [yolo] + L16 [route -4] skip + L17 (CONV1x1, Ci=256 Co=128) 추가 (2026-05-23 추가)
+
+- cfg 상 L15 = `[yolo]` (RTL 연산 없음, software 후처리), L16 = `[route layers=-4]` (L12 OFM 참조).
+  → RTL 관점에선 둘 다 "FSM skip + DMA 주소 alias" 로 처리.
+- L17 conv 구조는 L13 의 1×1 변형 (Ci=256 = L13 동일, Co=128, acc_len=64).
+- yolo_engine 변경:
+  - L17 파라미터 (blk_off=134160, bias_off=1971, OFM @ 0x320000, IFM @ 0x31C000)
+  - `is_conv_l17` 추가, `is_conv_1x1` = L12 || L14 || L17 로 확장
+  - 모든 conv mux (cur_w/h/co/acc_len/shift/ci_grps/eir_per_row/wgt_per_fi/bias_dma/ifm_init/ifm_next/ofm_fil/wgt_off/bias_off/bias_entry_base/ifm_base/ofm_layer_base) L17 case 추가
+  - `cur_ofm_fi_byte` / `cur_ofm_rb_byte` 에 L17 추가 (64 / 16, L10/L12/L13/L14 와 동일)
+  - **`addr_ifm_byte` 1×1 분기 세분화**: L12/L14 만 row stride=4096 (Ci=512), L17 은 2048 (Ci=256 = 3×3 path 와 동일 식 재사용)
+  - REPACK mux 에 cp==17 분기 추가 — L12 OFM → L17 IFM, Ci=256 (cp==13 와 동일 식). `is_rp_ci256 = (cp==13 || cp==17)` 로 in_words/cig_max/entries_per_row 통합.
+  - FSM 분기: cp==14 done → **cp=17 직점프 + S_L12_RP_LOAD** (L15/L16 skip), cp==17 done → S_DONE
+- L17 IFM = L12 OFM 을 NHWC entry 로 REPACK (1×1 conv path 의 필수 변환). REPACK FSM 은 cp==13 코드 그대로 활용.
+- post_process 의 `i_relu_en = !is_conv_l14` 그대로 — L17 은 자동 ReLU 활성 (cfg activation=relu).
+- 검증 결과 (Vivado xsim):
+  - Phase A (TB software REPACK → conv → L17 OFM 비교) : **0 / 8,192 PASS**
+  - **Phase B (L0 → L14 → cp=17 jump → L17) : 0 / 8,192 PASS**
+- 시뮬 시간: L0→L17 chain 189.4 ms sim time (wall time 9분 49초 Vivado xsim)
+- FSM transition 로그: `layer_idx 14 → 17` (L15/L16 skip), `17 → 18` (L17 완료)
+
+#### 11차 — L18 (UPSAMPLE 2×, 128 ch, 8×8 → 16×16) 추가 (2026-05-23 추가)
+
+- `upsample_unit.v` 는 이미 존재 (6-phase FSM: read → wait → 4 writes per input pixel).
+  미통합 상태였던 것을 yolo_engine 에 통합.
+- L11 (max_pool_s1) 통합 패턴 그대로 적용 — load → run → store 6 state.
+- yolo_engine 변경:
+  - L18 파라미터 (Co=128, H_in_b=W_in_b=4, OFM @ 0x328000 32KB)
+  - 신규 state 6 개 (`S_L18_LOAD/LOAD_WAIT/UP/UP_WAIT/STORE/STORE_WAIT`)
+  - 신규 DMA target `DMA_TGT_L18_IFM = 3'd7`
+  - `upsample_unit` → `u_upsample` 인스턴스화 (in_base=0, out_base=2048)
+  - dpram port mux 에 `upsample_phase` 분기 추가
+  - `dpram_load_we` 에 `l18_ifm_we` 추가 (L17 OFM → dpram[0..2047])
+  - FSM 분기: cp==17 conv done → S_L18_LOAD, S_L18_STORE_WAIT done → S_DONE
+  - `up_start_r` reset/1-cycle pulse 패턴 (pool_s1_start_r 와 동일)
+- L18 데이터 흐름:
+  - DRAM L17 OFM (2048 word, conv 2×2 packed) → dpram[0..2047]
+  - upsample_unit: 1 input pixel → 4 output pixel (값 복제) × 128 ch × 16 input block = 2048 input block × 4 = 8192 output block
+  - dpram[2048..10239] → DRAM L18 OFM (8192 word, conv 2×2 packed)
+- 검증 (Vivado xsim):
+  - Golden 출처: `CONV20_input.hex` 의 chan 0..127 = L19 route concat 의 첫 128 ch = L18 OFM (NCHW byte, 32768 byte)
+  - Phase A (TB software pack L17 OFM → L18 upsample → 비교) : **0 / 32,768 PASS**
+  - **Phase B (L0 → ... → L18) : 0 / 32,768 PASS**
+- 시뮬 시간: L0→L18 chain 183.0 ms sim time (wall time 8분 47초 Vivado xsim)
+- FSM transition 로그: `14 → 17 → 18 → 19` (L17 done → L18 자연 진입)
