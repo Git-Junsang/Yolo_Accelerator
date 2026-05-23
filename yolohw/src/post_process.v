@@ -29,6 +29,7 @@ module post_process(
     // 레이어별 파라미터
     input signed [31:0] bias,
     input [4:0]         shift_amount,
+    input               i_relu_en,    // 1=ReLU+UINT8 (L0~L13, L17), 0=INT8 raw (L14, L20)
 
     // 최종 출력
     output reg [7:0]    pixel_out,
@@ -43,19 +44,33 @@ module post_process(
 wire signed [31:0] biased;
 assign biased = acc_result + bias;
 
-// ② ReLU (음수 -> 0)
+// ② ReLU (relu_en=1 시 음수 → 0, relu_en=0 시 통과)
 wire signed [31:0] activated;
-assign activated = (biased[31]) ? 32'd0 : biased;
+assign activated = (i_relu_en && biased[31]) ? 32'd0 : biased;
 
-// ③ Descaling (산술 우측 시프트)
-wire signed [31:0] scaled;
-assign scaled = activated >>> shift_amount;
+// ③ Descaling (산술 우측 시프트, signed 보존)
+//   C 의 `/` 는 toward-zero rounding, Verilog `>>>` 는 floor (toward -∞)
+//   → 음수일 때 +1 LSB 차이 발생 (예: -50/64 = 0 in C vs -1 in Verilog).
+//   해결: 음수면 (2^shift - 1) 더한 후 shift → toward-zero 동작.
+//   (양수일 때 round_bias=0 이라 기존 동작 그대로 — L0~L13/L17 에 영향 없음)
+wire signed [31:0] round_bias = activated[31] ?
+    (($signed(32'sd1) <<< shift_amount) - 32'sd1) : 32'sd0;
+wire signed [31:0] scaled = (activated + round_bias) >>> shift_amount;
 
-// ④ Clamp (0~255 범위 제한)
-wire [7:0] clamped;
-assign clamped = (scaled[31])    ? 8'd0  : // 음수면 0
-                 (|scaled[31:8]) ? 8'hFF : // 256 이상이면 255
-                                   scaled[7:0];
+// ④ Clamp
+//   relu_en=1: 0~255 UINT8 (기존 동작)
+//   relu_en=0: -128~+127 INT8 (2's complement, L14/L20 detection layer)
+wire signed [31:0] s127  = 32'sd127;
+wire signed [31:0] sn128 = -32'sd128;
+wire [7:0] clamped =
+    i_relu_en ?
+        ( (scaled[31])    ? 8'd0  :
+          (|scaled[31:8]) ? 8'hFF :
+                            scaled[7:0] ) :
+        // INT8 signed clamp
+        ( (scaled > s127)  ? 8'h7F :
+          (scaled < sn128) ? 8'h80 :
+                             scaled[7:0] );
 
 //----------------------------------------------------------------------
 // 2. 순차 로직: 다음 클록에 결과를 래치

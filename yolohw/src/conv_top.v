@@ -36,6 +36,7 @@ module conv_top(
     input              i_conv_pause,      // HIGH: ST_NEXT 에서 대기 (streaming DMA 용)
     input              i_stream_wgt_mode, // HIGH: 필터별 weight DMA (wgt_base_r 동결)
     input              i_mode,            // 0=CONV3x3, 1=CONV1x1
+    input              i_relu_en,         // 1=ReLU+UINT8 clip, 0=INT8 raw (L14/L20)
 
     // ===== layer 파라미터 =====
     input  [11:0]      i_ofm_w_half,   // OFM width  / 2 (2×2 block 수)
@@ -157,6 +158,7 @@ module conv_top(
         .rstn    (rstn),
         .i_vld   (mac_vld_d),
         .i_mode  (i_mode),
+        .i_relu_en(i_relu_en),
         .i_len   (i_acc_len),
         .i_wgt   (wgt_data),
         .i_ifm_00(i_ifm_00),

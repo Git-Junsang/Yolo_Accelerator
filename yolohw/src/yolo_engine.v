@@ -490,6 +490,33 @@ module yolo_engine #(
     localparam [31:0] L13_WGT_PER_FI_BYTES = 32'd4096;
 
     //----------------------------------------------------------------
+    // L14 (CONV1x1, Ci=512, Co=195, 8×8 — L12 구조 + Co 만 다름)
+    //   IFM 형식: NHWC entry (L13→L14 RTL REPACK, L11→L12 와 동일 패턴)
+    //   Co=195 는 4 의 배수 아님 — fi loop 0..194 진행
+    //----------------------------------------------------------------
+    localparam [11:0] L14_W              = 12'd8;
+    localparam [11:0] L14_H              = 12'd8;
+    localparam [11:0] L14_W_HALF         = 12'd4;
+    localparam [11:0] L14_H_HALF         = 12'd4;
+    localparam [11:0] L14_W_BLOCKS       = 12'd2;
+    localparam [11:0] L14_CO             = 12'd195;     // not multiple of 4
+    localparam [7:0]  L14_ACC_LEN        = 8'd128;
+    localparam [4:0]  L14_SHIFT          = 5'd6;
+    localparam [7:0]  L14_CI_GRPS        = 8'd128;
+    localparam [11:0] L14_EIR_PER_ROW    = 12'd256;     // 128 × 2 (= L12)
+    localparam [19:0] L14_BIAS_DMA_WORDS = 20'd195;
+    localparam [19:0] L14_IFM_INIT_WORDS = 20'd2048;
+    localparam [19:0] L14_IFM_NEXT_WORDS = 20'd2048;
+    localparam [19:0] L14_OFM_FIL_WORDS  = 20'd4;
+    localparam [31:0] L14_WGT_BYTE_OFF   = 32'd6988800; // blk_off=109200 × 64
+    localparam [31:0] L14_BIAS_BYTE_OFF  = 32'd7104;    // bias_off=1776 × 4
+    localparam [31:0] L14_OFM_BYTE_BASE  = 32'h00318000;
+    localparam [31:0] L14_IFM_BYTE_BASE  = 32'h00310000;
+    localparam [11:0] L14_BIAS_ENTRY_BASE = 12'd1776;
+    localparam [19:0] L14_WGT_PER_FI_WORDS = 20'd2048;  // = L12
+    localparam [31:0] L14_WGT_PER_FI_BYTES = 32'd8192;
+
+    //----------------------------------------------------------------
     // AXI slave (control reg)
     //----------------------------------------------------------------
     wire [31:0] ctrl_reg0, ctrl_reg1, ctrl_reg2, ctrl_reg3;
@@ -606,6 +633,9 @@ module yolo_engine #(
     wire is_conv_l10 = (conv_phase_r == 5'd10);
     wire is_conv_l12 = (conv_phase_r == 5'd12);
     wire is_conv_l13 = (conv_phase_r == 5'd13);
+    wire is_conv_l14 = (conv_phase_r == 5'd14);
+    // 1×1 mode 통합 wire (conv_top.i_mode + ifm_line_buf.i_mode)
+    wire is_conv_1x1  = is_conv_l12 || is_conv_l14;
 
     //----------------------------------------------------------------
     // pool_phase_r — 현재 pool FSM (L1/L3/L5/L7/L9)
@@ -620,28 +650,29 @@ module yolo_engine #(
     //----------------------------------------------------------------
     // conv 파라미터 mux
     //----------------------------------------------------------------
-    wire [11:0] cur_w_blocks   = is_conv_l13 ? L13_W_BLOCKS : is_conv_l12 ? L12_W_BLOCKS : is_conv_l10 ? L10_W_BLOCKS : is_conv_l8 ? L8_W_BLOCKS : is_conv_l6 ? L6_W_BLOCKS : is_conv_l4 ? L4_W_BLOCKS : is_conv_l2 ? L2_W_BLOCKS : L0_W_BLOCKS;
-    wire [11:0] cur_w          = is_conv_l13 ? L13_W       : is_conv_l12 ? L12_W       : is_conv_l10 ? L10_W       : is_conv_l8 ? L8_W       : is_conv_l6 ? L6_W       : is_conv_l4 ? L4_W       : is_conv_l2 ? L2_W       : L0_W;
-    wire [11:0] cur_h          = is_conv_l13 ? L13_H       : is_conv_l12 ? L12_H       : is_conv_l10 ? L10_H       : is_conv_l8 ? L8_H       : is_conv_l6 ? L6_H       : is_conv_l4 ? L4_H       : is_conv_l2 ? L2_H       : L0_H;
-    wire [11:0] cur_w_half     = is_conv_l13 ? L13_W_HALF  : is_conv_l12 ? L12_W_HALF  : is_conv_l10 ? L10_W_HALF  : is_conv_l8 ? L8_W_HALF  : is_conv_l6 ? L6_W_HALF  : is_conv_l4 ? L4_W_HALF  : is_conv_l2 ? L2_W_HALF  : L0_W_HALF;
-    wire [11:0] cur_h_half     = is_conv_l13 ? L13_H_HALF  : is_conv_l12 ? L12_H_HALF  : is_conv_l10 ? L10_H_HALF  : is_conv_l8 ? L8_H_HALF  : is_conv_l6 ? L6_H_HALF  : is_conv_l4 ? L4_H_HALF  : is_conv_l2 ? L2_H_HALF  : L0_H_HALF;
-    wire [11:0] cur_co         = is_conv_l13 ? L13_CO      : is_conv_l12 ? L12_CO      : is_conv_l10 ? L10_CO      : is_conv_l8 ? L8_CO      : is_conv_l6 ? L6_CO      : is_conv_l4 ? L4_CO      : is_conv_l2 ? L2_CO      : L0_CO;
-    wire [7:0]  cur_acc_len    = is_conv_l13 ? L13_ACC_LEN : is_conv_l12 ? L12_ACC_LEN : is_conv_l10 ? L10_ACC_LEN : is_conv_l8 ? L8_ACC_LEN : is_conv_l6 ? L6_ACC_LEN : is_conv_l4 ? L4_ACC_LEN : is_conv_l2 ? L2_ACC_LEN : L0_ACC_LEN;
-    wire [4:0]  cur_shift      = is_conv_l13 ? L13_SHIFT   : is_conv_l12 ? L12_SHIFT   : is_conv_l10 ? L10_SHIFT   : is_conv_l8 ? L8_SHIFT   : is_conv_l6 ? L6_SHIFT   : is_conv_l4 ? L4_SHIFT   : is_conv_l2 ? L2_SHIFT   : L0_SHIFT;
-    wire [7:0]  cur_ci_grps    = is_conv_l13 ? L13_CI_GRPS : is_conv_l12 ? L12_CI_GRPS : is_conv_l10 ? L10_CI_GRPS : is_conv_l8 ? L8_CI_GRPS : is_conv_l6 ? L6_CI_GRPS : is_conv_l4 ? L4_CI_GRPS : is_conv_l2 ? L2_CI_GRPS : L0_CI_GRPS;
-    wire [11:0] cur_eir_per_row= is_conv_l13 ? L13_EIR_PER_ROW : is_conv_l12 ? L12_EIR_PER_ROW : is_conv_l10 ? L10_EIR_PER_ROW : is_conv_l8 ? L8_EIR_PER_ROW : is_conv_l6 ? L6_EIR_PER_ROW : is_conv_l4 ? L4_EIR_PER_ROW : is_conv_l2 ? L2_EIR_PER_ROW : L0_W_BLOCKS;
+    wire [11:0] cur_w_blocks   = is_conv_l14 ? L14_W_BLOCKS : is_conv_l13 ? L13_W_BLOCKS : is_conv_l12 ? L12_W_BLOCKS : is_conv_l10 ? L10_W_BLOCKS : is_conv_l8 ? L8_W_BLOCKS : is_conv_l6 ? L6_W_BLOCKS : is_conv_l4 ? L4_W_BLOCKS : is_conv_l2 ? L2_W_BLOCKS : L0_W_BLOCKS;
+    wire [11:0] cur_w          = is_conv_l14 ? L14_W       : is_conv_l13 ? L13_W       : is_conv_l12 ? L12_W       : is_conv_l10 ? L10_W       : is_conv_l8 ? L8_W       : is_conv_l6 ? L6_W       : is_conv_l4 ? L4_W       : is_conv_l2 ? L2_W       : L0_W;
+    wire [11:0] cur_h          = is_conv_l14 ? L14_H       : is_conv_l13 ? L13_H       : is_conv_l12 ? L12_H       : is_conv_l10 ? L10_H       : is_conv_l8 ? L8_H       : is_conv_l6 ? L6_H       : is_conv_l4 ? L4_H       : is_conv_l2 ? L2_H       : L0_H;
+    wire [11:0] cur_w_half     = is_conv_l14 ? L14_W_HALF  : is_conv_l13 ? L13_W_HALF  : is_conv_l12 ? L12_W_HALF  : is_conv_l10 ? L10_W_HALF  : is_conv_l8 ? L8_W_HALF  : is_conv_l6 ? L6_W_HALF  : is_conv_l4 ? L4_W_HALF  : is_conv_l2 ? L2_W_HALF  : L0_W_HALF;
+    wire [11:0] cur_h_half     = is_conv_l14 ? L14_H_HALF  : is_conv_l13 ? L13_H_HALF  : is_conv_l12 ? L12_H_HALF  : is_conv_l10 ? L10_H_HALF  : is_conv_l8 ? L8_H_HALF  : is_conv_l6 ? L6_H_HALF  : is_conv_l4 ? L4_H_HALF  : is_conv_l2 ? L2_H_HALF  : L0_H_HALF;
+    wire [11:0] cur_co         = is_conv_l14 ? L14_CO      : is_conv_l13 ? L13_CO      : is_conv_l12 ? L12_CO      : is_conv_l10 ? L10_CO      : is_conv_l8 ? L8_CO      : is_conv_l6 ? L6_CO      : is_conv_l4 ? L4_CO      : is_conv_l2 ? L2_CO      : L0_CO;
+    wire [7:0]  cur_acc_len    = is_conv_l14 ? L14_ACC_LEN : is_conv_l13 ? L13_ACC_LEN : is_conv_l12 ? L12_ACC_LEN : is_conv_l10 ? L10_ACC_LEN : is_conv_l8 ? L8_ACC_LEN : is_conv_l6 ? L6_ACC_LEN : is_conv_l4 ? L4_ACC_LEN : is_conv_l2 ? L2_ACC_LEN : L0_ACC_LEN;
+    wire [4:0]  cur_shift      = is_conv_l14 ? L14_SHIFT   : is_conv_l13 ? L13_SHIFT   : is_conv_l12 ? L12_SHIFT   : is_conv_l10 ? L10_SHIFT   : is_conv_l8 ? L8_SHIFT   : is_conv_l6 ? L6_SHIFT   : is_conv_l4 ? L4_SHIFT   : is_conv_l2 ? L2_SHIFT   : L0_SHIFT;
+    wire [7:0]  cur_ci_grps    = is_conv_l14 ? L14_CI_GRPS : is_conv_l13 ? L13_CI_GRPS : is_conv_l12 ? L12_CI_GRPS : is_conv_l10 ? L10_CI_GRPS : is_conv_l8 ? L8_CI_GRPS : is_conv_l6 ? L6_CI_GRPS : is_conv_l4 ? L4_CI_GRPS : is_conv_l2 ? L2_CI_GRPS : L0_CI_GRPS;
+    wire [11:0] cur_eir_per_row= is_conv_l14 ? L14_EIR_PER_ROW : is_conv_l13 ? L13_EIR_PER_ROW : is_conv_l12 ? L12_EIR_PER_ROW : is_conv_l10 ? L10_EIR_PER_ROW : is_conv_l8 ? L8_EIR_PER_ROW : is_conv_l6 ? L6_EIR_PER_ROW : is_conv_l4 ? L4_EIR_PER_ROW : is_conv_l2 ? L2_EIR_PER_ROW : L0_W_BLOCKS;
 
     // per-filter weight DMA size (streaming): acc_len 에 의존
-    wire [19:0] cur_wgt_per_fi_words = is_conv_l13 ? L13_WGT_PER_FI_WORDS : is_conv_l12 ? L12_WGT_PER_FI_WORDS : is_conv_l10 ? L10_WGT_PER_FI_WORDS : is_conv_l8 ? L8_WGT_PER_FI_WORDS : is_conv_l6 ? L6_WGT_PER_FI_WORDS : is_conv_l4 ? L4_WGT_PER_FI_WORDS : is_conv_l2 ? L2_WGT_PER_FI_WORDS : L0_WGT_PER_FI_WORDS;
-    wire [31:0] cur_wgt_per_fi_bytes = is_conv_l13 ? L13_WGT_PER_FI_BYTES : is_conv_l12 ? L12_WGT_PER_FI_BYTES : is_conv_l10 ? L10_WGT_PER_FI_BYTES : is_conv_l8 ? L8_WGT_PER_FI_BYTES : is_conv_l6 ? L6_WGT_PER_FI_BYTES : is_conv_l4 ? L4_WGT_PER_FI_BYTES : is_conv_l2 ? L2_WGT_PER_FI_BYTES : L0_WGT_PER_FI_BYTES;
+    wire [19:0] cur_wgt_per_fi_words = is_conv_l14 ? L14_WGT_PER_FI_WORDS : is_conv_l13 ? L13_WGT_PER_FI_WORDS : is_conv_l12 ? L12_WGT_PER_FI_WORDS : is_conv_l10 ? L10_WGT_PER_FI_WORDS : is_conv_l8 ? L8_WGT_PER_FI_WORDS : is_conv_l6 ? L6_WGT_PER_FI_WORDS : is_conv_l4 ? L4_WGT_PER_FI_WORDS : is_conv_l2 ? L2_WGT_PER_FI_WORDS : L0_WGT_PER_FI_WORDS;
+    wire [31:0] cur_wgt_per_fi_bytes = is_conv_l14 ? L14_WGT_PER_FI_BYTES : is_conv_l13 ? L13_WGT_PER_FI_BYTES : is_conv_l12 ? L12_WGT_PER_FI_BYTES : is_conv_l10 ? L10_WGT_PER_FI_BYTES : is_conv_l8 ? L8_WGT_PER_FI_BYTES : is_conv_l6 ? L6_WGT_PER_FI_BYTES : is_conv_l4 ? L4_WGT_PER_FI_BYTES : is_conv_l2 ? L2_WGT_PER_FI_BYTES : L0_WGT_PER_FI_BYTES;
     // 다른 DMA word count (per layer, 1 회)
-    wire [19:0] cur_bias_dma   = is_conv_l13 ? L13_BIAS_DMA_WORDS : is_conv_l12 ? L12_BIAS_DMA_WORDS : is_conv_l10 ? L10_BIAS_DMA_WORDS : is_conv_l8 ? L8_BIAS_DMA_WORDS : is_conv_l6 ? L6_BIAS_DMA_WORDS : is_conv_l4 ? L4_BIAS_DMA_WORDS : is_conv_l2 ? L2_BIAS_DMA_WORDS : BIAS_DMA_WORDS;
-    wire [19:0] cur_ifm_init   = is_conv_l13 ? L13_IFM_INIT_WORDS : is_conv_l12 ? L12_IFM_INIT_WORDS : is_conv_l10 ? L10_IFM_INIT_WORDS : is_conv_l8 ? L8_IFM_INIT_WORDS : is_conv_l6 ? L6_IFM_INIT_WORDS : is_conv_l4 ? L4_IFM_INIT_WORDS : is_conv_l2 ? L2_IFM_INIT_WORDS : IFM_INIT_WORDS;
-    wire [19:0] cur_ifm_next   = is_conv_l13 ? L13_IFM_NEXT_WORDS : is_conv_l12 ? L12_IFM_NEXT_WORDS : is_conv_l10 ? L10_IFM_NEXT_WORDS : is_conv_l8 ? L8_IFM_NEXT_WORDS : is_conv_l6 ? L6_IFM_NEXT_WORDS : is_conv_l4 ? L4_IFM_NEXT_WORDS : is_conv_l2 ? L2_IFM_NEXT_WORDS : IFM_NEXT_WORDS;
-    wire [19:0] cur_ofm_fil    = is_conv_l13 ? L13_OFM_FIL_WORDS  : is_conv_l12 ? L12_OFM_FIL_WORDS  : is_conv_l10 ? L10_OFM_FIL_WORDS  : is_conv_l8 ? L8_OFM_FIL_WORDS  : is_conv_l6 ? L6_OFM_FIL_WORDS  : is_conv_l4 ? L4_OFM_FIL_WORDS  : is_conv_l2 ? L2_OFM_FIL_WORDS  : OFM_FIL_WORDS;
+    wire [19:0] cur_bias_dma   = is_conv_l14 ? L14_BIAS_DMA_WORDS : is_conv_l13 ? L13_BIAS_DMA_WORDS : is_conv_l12 ? L12_BIAS_DMA_WORDS : is_conv_l10 ? L10_BIAS_DMA_WORDS : is_conv_l8 ? L8_BIAS_DMA_WORDS : is_conv_l6 ? L6_BIAS_DMA_WORDS : is_conv_l4 ? L4_BIAS_DMA_WORDS : is_conv_l2 ? L2_BIAS_DMA_WORDS : BIAS_DMA_WORDS;
+    wire [19:0] cur_ifm_init   = is_conv_l14 ? L14_IFM_INIT_WORDS : is_conv_l13 ? L13_IFM_INIT_WORDS : is_conv_l12 ? L12_IFM_INIT_WORDS : is_conv_l10 ? L10_IFM_INIT_WORDS : is_conv_l8 ? L8_IFM_INIT_WORDS : is_conv_l6 ? L6_IFM_INIT_WORDS : is_conv_l4 ? L4_IFM_INIT_WORDS : is_conv_l2 ? L2_IFM_INIT_WORDS : IFM_INIT_WORDS;
+    wire [19:0] cur_ifm_next   = is_conv_l14 ? L14_IFM_NEXT_WORDS : is_conv_l13 ? L13_IFM_NEXT_WORDS : is_conv_l12 ? L12_IFM_NEXT_WORDS : is_conv_l10 ? L10_IFM_NEXT_WORDS : is_conv_l8 ? L8_IFM_NEXT_WORDS : is_conv_l6 ? L6_IFM_NEXT_WORDS : is_conv_l4 ? L4_IFM_NEXT_WORDS : is_conv_l2 ? L2_IFM_NEXT_WORDS : IFM_NEXT_WORDS;
+    wire [19:0] cur_ofm_fil    = is_conv_l14 ? L14_OFM_FIL_WORDS  : is_conv_l13 ? L13_OFM_FIL_WORDS  : is_conv_l12 ? L12_OFM_FIL_WORDS  : is_conv_l10 ? L10_OFM_FIL_WORDS  : is_conv_l8 ? L8_OFM_FIL_WORDS  : is_conv_l6 ? L6_OFM_FIL_WORDS  : is_conv_l4 ? L4_OFM_FIL_WORDS  : is_conv_l2 ? L2_OFM_FIL_WORDS  : OFM_FIL_WORDS;
 
     // BRAM bias entry base (wgt 는 streaming 으로 항상 0 사용)
-    wire [11:0] cur_bias_entry_base = is_conv_l13 ? L13_BIAS_ENTRY_BASE :
+    wire [11:0] cur_bias_entry_base = is_conv_l14 ? L14_BIAS_ENTRY_BASE :
+                                      is_conv_l13 ? L13_BIAS_ENTRY_BASE :
                                       is_conv_l12 ? L12_BIAS_ENTRY_BASE :
                                       is_conv_l10 ? L10_BIAS_ENTRY_BASE :
                                       is_conv_l8  ? L8_BIAS_ENTRY_BASE  :
@@ -917,7 +948,7 @@ module yolo_engine #(
 
     ifm_line_buf u_line_buf (
         .clk(clk), .rstn(rstn),
-        .i_mode(is_conv_l12),   // 1×1 mode for L12, 0 for L0~L10 (3×3)
+        .i_mode(is_conv_1x1),   // 1×1 mode for L12, L14
         .i_w_blocks(cur_w_blocks),
         .i_ci_groups(cur_ci_grps),
         .i_w(cur_w),
@@ -969,7 +1000,9 @@ module yolo_engine #(
         .o_fil_done(conv_fil_done),
         .i_conv_pause(1'b0),
         .i_stream_wgt_mode(1'b1),    // streaming: filter 전환 시 wgt_base 동결
-        .i_mode(is_conv_l12),         // 1=1×1 mode (L12), 0=3×3 mode (L0~L10)
+        .i_mode(is_conv_1x1),         // 1=1×1 mode (L12, L14), 0=3×3 mode
+        .i_relu_en(!is_conv_l14),     // L14 (detection) 만 ReLU off — L20 추가 시 확장
+
         .i_ofm_w_half(cur_w_half),
         .i_ofm_h_half(12'd1),
         .i_row_start(rb_r),
@@ -1317,20 +1350,22 @@ module yolo_engine #(
     end
 
     //--------------------------------------------------------------
-    // REPACK 입출력 mux (L11→L12 vs L12→L13)
-    //   conv_phase_r == 12 : L11 OFM → L12 IFM (Ci=512, ci_g_max=127, 8192 word)
-    //   conv_phase_r == 13 : L12 OFM → L13 IFM (Ci=256, ci_g_max=63,  4096 word)
+    // REPACK 입출력 mux (L11→L12, L12→L13, L13→L14)
+    //   cp == 12 : L11 OFM → L12 IFM (Ci=512, ci_g_max=127, 8192 word)
+    //   cp == 13 : L12 OFM → L13 IFM (Ci=256, ci_g_max=63,  4096 word)
+    //   cp == 14 : L13 OFM → L14 IFM (Ci=512, ci_g_max=127, 8192 word)
     //--------------------------------------------------------------
-    wire [31:0] cur_rp12_in_base   = (conv_phase_r == 5'd12) ?
-                                         (dram_ofm_base + L11_OFM_BYTE_BASE) :
-                                         (dram_ofm_base + L12_OFM_BYTE_BASE);
-    wire [31:0] cur_rp12_out_base  = (conv_phase_r == 5'd12) ?
-                                         (dram_ofm_base + L12_IFM_BYTE_BASE) :
-                                         (dram_ofm_base + L13_IFM_BYTE_BASE);
-    wire [19:0] cur_rp12_in_words  = (conv_phase_r == 5'd12) ? 20'd8192 : 20'd4096;
-    wire [11:0] cur_rp12_cig_max   = (conv_phase_r == 5'd12) ? 12'd127  : 12'd63;
+    wire [31:0] cur_rp12_in_base   = (conv_phase_r == 5'd12) ? (dram_ofm_base + L11_OFM_BYTE_BASE) :
+                                     (conv_phase_r == 5'd13) ? (dram_ofm_base + L12_OFM_BYTE_BASE) :
+                                                               (dram_ofm_base + L13_OFM_BYTE_BASE);
+    wire [31:0] cur_rp12_out_base  = (conv_phase_r == 5'd12) ? (dram_ofm_base + L12_IFM_BYTE_BASE) :
+                                     (conv_phase_r == 5'd13) ? (dram_ofm_base + L13_IFM_BYTE_BASE) :
+                                                               (dram_ofm_base + L14_IFM_BYTE_BASE);
+    //   L13 만 Ci=256 (4096 word), 나머지는 Ci=512 (8192 word)
+    wire [19:0] cur_rp12_in_words  = (conv_phase_r == 5'd13) ? 20'd4096 : 20'd8192;
+    wire [11:0] cur_rp12_cig_max   = (conv_phase_r == 5'd13) ? 12'd63   : 12'd127;
     //   entries per row = (cig_max + 1) * 2
-    wire [11:0] cur_rp12_entries_per_row = (conv_phase_r == 5'd12) ? 12'd256 : 12'd128;
+    wire [11:0] cur_rp12_entries_per_row = (conv_phase_r == 5'd13) ? 12'd128 : 12'd256;
 
     // REPACK 완료 조건 (다음 entry 가 마지막일 때 OR 마지막 store 후)
     wire rp12_last_entry = (rp12_row_r == 12'd7) && (rp12_cig_r == cur_rp12_cig_max) && (rp12_cb_r == 12'd1);
@@ -1398,7 +1433,8 @@ module yolo_engine #(
     //----------------------------------------------------------------
     // 현재 layer 의 weight base byte (DRAM)
     wire [31:0] cur_wgt_layer_base = dram_wgt_base +
-                                     (is_conv_l13 ? L13_WGT_BYTE_OFF :
+                                     (is_conv_l14 ? L14_WGT_BYTE_OFF :
+                                      is_conv_l13 ? L13_WGT_BYTE_OFF :
                                       is_conv_l12 ? L12_WGT_BYTE_OFF :
                                       is_conv_l10 ? L10_WGT_BYTE_OFF :
                                       is_conv_l8  ? L8_WGT_BYTE_OFF  :
@@ -1409,7 +1445,8 @@ module yolo_engine #(
     wire [31:0] addr_wgt_fi = cur_wgt_layer_base + ({20'd0, fi_r} * cur_wgt_per_fi_bytes);
 
     // Bias base byte offset (within bias DRAM region)
-    wire [31:0] cur_bias_off = is_conv_l13 ? L13_BIAS_BYTE_OFF :
+    wire [31:0] cur_bias_off = is_conv_l14 ? L14_BIAS_BYTE_OFF :
+                               is_conv_l13 ? L13_BIAS_BYTE_OFF :
                                is_conv_l12 ? L12_BIAS_BYTE_OFF :
                                is_conv_l10 ? L10_BIAS_BYTE_OFF :
                                is_conv_l8  ? L8_BIAS_BYTE_OFF  :
@@ -1424,11 +1461,12 @@ module yolo_engine #(
     //   L4: 64*32  = 2048 byte/row (shift 11)
     //   (L6+ 도 모두 2048 byte/row — W*Ci 가 상수)
     //   3×3 mode: rb=0 시 0, rb>0 시 (2*rb + 1) — 첫 3 rows 후 streaming
-    //   1×1 mode (L12): 2*rb — rb=0: rows 0,1, rb=1: rows 2,3, ...
-    wire [11:0] ifm_first_row_for_rb = is_conv_l12 ?
+    //   1×1 mode (L12/L14): 2*rb — rb=0: rows 0,1, rb=1: rows 2,3, ...
+    wire [11:0] ifm_first_row_for_rb = is_conv_1x1 ?
                                           {rb_r[10:0], 1'b0} :
                                           ((rb_r == 12'd0) ? 12'd0 : ({rb_r[10:0], 1'b0}) + 12'd1);
-    wire [31:0] cur_ifm_base = is_conv_l13 ? (dram_ofm_base + L13_IFM_BYTE_BASE) :
+    wire [31:0] cur_ifm_base = is_conv_l14 ? (dram_ofm_base + L14_IFM_BYTE_BASE) :
+                               is_conv_l13 ? (dram_ofm_base + L13_IFM_BYTE_BASE) :
                                is_conv_l12 ? (dram_ofm_base + L12_IFM_BYTE_BASE) :
                                is_conv_l10 ? (dram_ofm_base + L10_IFM_BYTE_BASE) :
                                is_conv_l8  ? (dram_ofm_base + L8_IFM_BYTE_BASE)  :
@@ -1436,12 +1474,12 @@ module yolo_engine #(
                                is_conv_l4  ? (dram_ofm_base + L4_IFM_BYTE_BASE)  :
                                is_conv_l2  ? (dram_ofm_base + L2_IFM_BYTE_BASE)  :
                                              dram_ifm_base;
-    //   L12 1×1 IFM: row stride = 4096 byte (ci_g × W_BLOCKS × 16 = 128×2×16)
+    //   L12/L14 1×1 IFM: row stride = 4096 byte (ci_g × W_BLOCKS × 16 = 128×2×16)
     //   L13 3×3 IFM: row stride = 2048 byte (ci_g × W_BLOCKS × 16 = 64×2×16)
     //   L0 3×3 IFM: row stride = 1024 byte (W × Ci_pad = 256×4)
     //   L2~L10 3×3 IFM: row stride = 2048 byte
     wire [31:0] addr_ifm_byte = cur_ifm_base +
-                                (is_conv_l12 ?
+                                (is_conv_1x1 ?
                                    ({20'd0, ifm_first_row_for_rb} << 12) :
                                  is_conv_l0 ?
                                    ({20'd0, ifm_first_row_for_rb} << 10) :
@@ -1463,7 +1501,8 @@ module yolo_engine #(
     //     L6:   1024,  64
     //     L8:    256,  32
     //     L10:    64,  16
-    wire [31:0] cur_ofm_layer_base = is_conv_l13 ? (dram_ofm_base + L13_OFM_BYTE_BASE) :
+    wire [31:0] cur_ofm_layer_base = is_conv_l14 ? (dram_ofm_base + L14_OFM_BYTE_BASE) :
+                                     is_conv_l13 ? (dram_ofm_base + L13_OFM_BYTE_BASE) :
                                      is_conv_l12 ? (dram_ofm_base + L12_OFM_BYTE_BASE) :
                                      is_conv_l10 ? (dram_ofm_base + L10_OFM_BYTE_BASE) :
                                      is_conv_l8  ? (dram_ofm_base + L8_OFM_BYTE_BASE)  :
@@ -1471,13 +1510,13 @@ module yolo_engine #(
                                      is_conv_l4  ? (dram_ofm_base + L4_OFM_BYTE_BASE)  :
                                      is_conv_l2  ? (dram_ofm_base + L2_OFM_BYTE_BASE)  :
                                                    dram_ofm_base;
-    //   L13/L12/L10: 8×8 → H_HALF × W_HALF = 4×4 → per fi = 64 byte
-    wire [31:0] cur_ofm_fi_byte = (is_conv_l13 || is_conv_l12 || is_conv_l10) ? 32'd64 :
+    //   L14/L13/L12/L10: 8×8 → H_HALF × W_HALF = 4×4 → per fi = 64 byte
+    wire [31:0] cur_ofm_fi_byte = (is_conv_l14 || is_conv_l13 || is_conv_l12 || is_conv_l10) ? 32'd64 :
                                   is_conv_l8  ? 32'd256   :
                                   is_conv_l6  ? 32'd1024  :
                                   is_conv_l4  ? 32'd4096  :
                                   is_conv_l2  ? 32'd16384 : 32'd65536;
-    wire [31:0] cur_ofm_rb_byte = (is_conv_l13 || is_conv_l12 || is_conv_l10) ? 32'd16 :
+    wire [31:0] cur_ofm_rb_byte = (is_conv_l14 || is_conv_l13 || is_conv_l12 || is_conv_l10) ? 32'd16 :
                                   is_conv_l8  ? 32'd32    :
                                   is_conv_l6  ? 32'd64    :
                                   is_conv_l4  ? 32'd128   :
@@ -1679,8 +1718,14 @@ module yolo_engine #(
                         rb_r         <= 12'd0;
                         state_r      <= S_L12_RP_LOAD;
                     end else if (conv_phase_r == 5'd13) begin
-                        // L13 완료 → 종료
-                        layer_idx      <= 5'd14;
+                        // L13 완료 → L14 REPACK 진입
+                        layer_idx    <= 5'd14;
+                        conv_phase_r <= 5'd14;
+                        rb_r         <= 12'd0;
+                        state_r      <= S_L12_RP_LOAD;
+                    end else if (conv_phase_r == 5'd14) begin
+                        // L14 완료 → 종료
+                        layer_idx      <= 5'd15;
                         network_done_r <= 1'b1;
                         state_r        <= S_DONE;
                     end else begin

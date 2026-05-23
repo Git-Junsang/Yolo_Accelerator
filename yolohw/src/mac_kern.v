@@ -33,6 +33,7 @@ module mac_kern(
     // 컨트롤
     input                  i_vld,      // 입력 사이클 유효
     input                  i_mode,     // 0=CONV3x3, 1=CONV1x1 (디버그/상위 분기용)
+    input                  i_relu_en,  // 1=ReLU+UINT8, 0=INT8 raw (L14/L20)
     input  [7:0]           i_len,      // 누적 cycle 수
 
     // 데이터 입력
@@ -130,25 +131,25 @@ module mac_kern(
     post_process u_pp_00 (
         .clk(clk), .rstn(rstn),
         .acc_done(acc_done), .acc_result(psum_00),
-        .bias(i_bias), .shift_amount(i_shift),
+        .bias(i_bias), .shift_amount(i_shift), .i_relu_en(i_relu_en),
         .pixel_out(px_00), .output_valid(vld_00)
     );
     post_process u_pp_01 (
         .clk(clk), .rstn(rstn),
         .acc_done(acc_done), .acc_result(psum_01),
-        .bias(i_bias), .shift_amount(i_shift),
+        .bias(i_bias), .shift_amount(i_shift), .i_relu_en(i_relu_en),
         .pixel_out(px_01), .output_valid(vld_01)
     );
     post_process u_pp_10 (
         .clk(clk), .rstn(rstn),
         .acc_done(acc_done), .acc_result(psum_10),
-        .bias(i_bias), .shift_amount(i_shift),
+        .bias(i_bias), .shift_amount(i_shift), .i_relu_en(i_relu_en),
         .pixel_out(px_10), .output_valid(vld_10)
     );
     post_process u_pp_11 (
         .clk(clk), .rstn(rstn),
         .acc_done(acc_done), .acc_result(psum_11),
-        .bias(i_bias), .shift_amount(i_shift),
+        .bias(i_bias), .shift_amount(i_shift), .i_relu_en(i_relu_en),
         .pixel_out(px_11), .output_valid(vld_11)
     );
 

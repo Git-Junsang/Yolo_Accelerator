@@ -70,6 +70,7 @@ OFM  : 0x00C00000 →
 | l11_verify_tb | 0          | 0 mismatch   | POOL_S1, max pool 이 propagation 흡수 |
 | l12_verify_tb | 0          | 0 mismatch    | CONV1x1, RTL REPACK + L11 maxpool 흡수 효과 지속 |
 | l13_verify_tb | 0          | 0 mismatch    | CONV3x3 (L10 구조 재사용), L12→L13 RTL REPACK |
+| l14_verify_tb | 0          | 0 mismatch    | CONV1x1 detection layer (linear activation, INT8 raw output) |
 
 모든 standalone PASS → RTL 자체 버그 없음.
 Chain mismatch 는 모두 ±1 LSB 수준의 양자화 차이 propagation 으로 추정 (Δ 분포 통계 측정 진행 중).
@@ -167,3 +168,27 @@ Chain mismatch 는 모두 ±1 LSB 수준의 양자화 차이 propagation 으로 
   - Phase A : 0 / 32,768 (TB software REPACK)
   - **Phase B : 0 / 32,768** — L11 maxpool 흡수 효과가 L13 까지 지속
 - 시뮬 시간: L0→L13 chain 181.5 ms sim time (wall time ~10분 Vivado)
+
+#### 9차 — L14 (CONV1x1 detection layer, Ci=512 Co=195) 추가 (2026-05-23 추가)
+
+- L14 는 yolov2 의 detection layer 로, **activation=linear (ReLU 없음) + INT8 raw output**.
+  aix2024.cfg 의 line 131 `activation=linear` (L20 도 동일).
+- L14 conv 구조는 L12 의 1×1 mode 와 동일 (Ci=512, acc_len=128). Co=195 (4 의 배수 아님).
+- yolo_engine 변경:
+  - L14 파라미터 (blk_off=109200, bias_off=1776, OFM @ 0x318000, IFM @ 0x310000)
+  - `is_conv_l14` + `is_conv_1x1` 통합 wire (L12+L14)
+  - REPACK mux 확장 (cp==14: L13 OFM → L14 IFM, Ci=512 = cp==12 와 동일 식)
+  - FSM 분기: cp==13 done → L14 REPACK → L14 conv → S_DONE
+- **post_process.v 의 큰 수정**:
+  1. **`i_relu_en` 입력 추가**:
+     - `i_relu_en=1` (L0~L13/L17): 기존 ReLU + UINT8 (0..255) clamp
+     - `i_relu_en=0` (L14/L20): ReLU bypass + INT8 signed (-128..+127) clamp
+  2. **Round-bias (음수 toward-zero rounding)**:
+     - Verilog `>>>` 는 floor (toward -∞), C 의 `/` 는 toward-zero
+     - 음수일 때 `(2^shift - 1)` 더한 후 shift → C 와 동일 동작
+     - 양수일 때 round_bias=0 이라 다른 layer 영향 없음
+- `mac_kern`, `conv_top` 에 `i_relu_en` pass-through. yolo_engine 에서 `i_relu_en = !is_conv_l14`.
+- **첫 시뮬 결과** (수정 전): 11955/12480 mismatch, `got=00 exp=ff` 패턴 (모두 ReLU clip)
+- **두 번째 결과** (i_relu_en 만 추가 후): 11966/12480 mismatch 중 |Δ|=1 이 98% — toward-zero rounding 차이로 1 LSB off-by-one
+- **세 번째 결과** (round-bias 추가 후): **0/12480 PASS** (Phase A, B 모두)
+- 시뮬 시간: L0→L14 chain 196 ms sim time (wall time ~10분 Vivado)
