@@ -279,3 +279,15 @@ L18 chain 검증(Phase B)에서 **동일 PC가 아닌 환경에 따라 mismatch 
 
 - 수정 문서: README.md(디렉토리·인스턴스 계층·파일별·FSM·배지·Last updated), CLAUDE.md(§6 파일 구조), ARCHITECTURE.md(§7 디렉토리).
 - 22-layer ↔ 서브모듈 매핑, DRAM 메모리 맵 등 나머지 기술 정보는 실제와 일치 확인됨.
+
+### L19 (ROUTE concat) + L20 (CONV1x1 detection head 2) 통합 및 검증 PASS (2026-05-24)
+
+마지막 RTL 레이어 L19/L20 통합 완료. **RTL 추론이 L20 에서 완성**됨 (L21 = software YOLO 후처리).
+
+- **L19 (Route, layers=-1,8)**: 연산 모듈 없이 **RTL REPACK** 으로 구현. L18 OFM(16×16×128, ch 0..127) ‖ L8 OFM(16×16×256, ch 128..383) 을 채널 concat → L20 IFM(16×16×384, NHWC entry). 신규 FSM 8 state(`S_L19_RP_LOAD_A`~`S_L19_RP_NEXT`), rp19_* 주소 로직(rp12 의 16×16 2-source 확장). L8 OFM(0x2D0000) 보존 영역을 route 소스로 사용. software memcpy·double-inference 폐지.
+- **L20 (CONV1x1 detection head 2)**: Ci=384 Co=195 16×16, ReLU off. 기존 conv 파이프라인 재사용(cur_* mux + IFM/OFM/weight/bias 주소 L20 분기). DRAM: IFM @ 0x330000(96KB), OFM @ 0x348000. weight/bias 는 gen_sim_dram.py CONV20 항목(blk_off=142352, bias_off=2099).
+- **descale shift 원인 규명**: detection 레이어 shift 는 다음 conv 의 input quant multiplier 에 의존 — **L14=6**(다음 L17 conv), **L20=9**(다음 conv 없음). golden 수학 역산으로 확정(`acc>>9` + post_process 의 trunc-toward-zero + INT8 signed clamp). 초기 shift=6 오설정이 Phase A 98% mismatch 의 원인이었음(L20_SHIFT 6→9 수정으로 해결).
+- **검증 (l20_verify_tb, l13 canonical 포맷)**:
+  - Phase A (standalone L19+L20): L20 IFM(REPACK) 0 mismatch + L20 OFM 0 mismatch → **PASS**
+  - Phase B (chain L10→L20, L8 OFM golden 주입): **PASS**
+- 문서 갱신: ARCHITECTURE / technical_reference / study_guide 의 L19 "software concat"→RTL REPACK, double→single-inference, shift 6→9 정정.

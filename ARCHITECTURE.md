@@ -15,8 +15,8 @@
 
 ## 1. 하드웨어 / 소프트웨어 역할 분담
 
-- **하드웨어 (RTL, Phase 2 완료)**: Conv(3×3, 1×1), Bias + Descaling, ReLU, MaxPool(stride 2 / stride 1), Upsample, Route(DMA 주소 제어)
-- **소프트웨어 (Phase 3 MicroBlaze + Host PC)**: 가속기 제어, DMA 트리거, YOLO 후처리 (Sigmoid, Softmax, NMS)
+- **하드웨어 (RTL, Phase 2 완료)**: Conv(3×3, 1×1), Bias + Descaling, ReLU, MaxPool(stride 2 / stride 1), Upsample, **Route(RTL REPACK — L16/L19 concat 을 yolo_engine FSM 이 자동 처리, software memcpy 불필요)**
+- **소프트웨어 (Phase 3 MicroBlaze + Host PC)**: 가속기 제어, DMA 트리거, YOLO 후처리 (Sigmoid, Softmax, NMS). L0→L20 single-inference (double-inference 폐지)
 
 ## 2. 전체 네트워크 구조 (22 Layers)
 
@@ -31,8 +31,8 @@
 | 16 | Route (← L12) | - | - | 8×8×256 | FSM skip + DMA 주소 alias |
 | 17 | Conv 1×1 | 128 | 8×8×256 | 8×8×128 | - |
 | 18 | Upsample 2× | - | 8×8×128 | 16×16×128 | `upsample_unit.v` |
-| 19 | Route (← L18 ‖ L8) | - | - | 16×16×384 | FSM skip + software DRAM concat |
-| 20 | Conv 1×1 | 195 | 16×16×384 | 16×16×195 | YOLO head 2 |
+| 19 | Route (← L18 ‖ L8) | - | - | 16×16×384 | **RTL REPACK** (L18 OFM ‖ L8 OFM → L20 IFM, `S_L19_RP_*` 8 states) |
+| 20 | Conv 1×1 | 195 | 16×16×384 | 16×16×195 | YOLO head 2 (detection, ReLU off, **descale shift=9**) |
 | 21 | YOLO output | - | - | - | 16×16 격자 출력 |
 
 **주의**: 최대 메모리는 L0 IFM (192 KB), 최대 MAC 연산은 L8/L10. Route 위해 L8/L12 OFM 은 DRAM 보존 필수.
@@ -66,7 +66,9 @@ yolo_engine.v ★ TOP — 22-layer 자동 추론 FSM (53 states: conv/pool/REPAC
 │       │   ├── mul.v × 144       ← genvar(i=0..35) × 4 spatial = 144 (INT8×INT8→INT16)
 │       │   │                       w: INT8 signed, x: INT8 signed (Phase 2 수정: UINT8→INT8)
 │       │   └── add_tree_36in.v × 4
-│       └── post_process.v × 4    ← bias + ReLU + arith shift + UINT8 clip
+│       └── post_process.v × 4    ← bias + ReLU + descale shift + clip
+│                                   conv layer: arith shift + UINT8(0~255) clip
+│                                   detection(L14 shift=6 / L20 shift=9): trunc-toward-zero + INT8 signed clamp
 │
 ├── max_pool_unit.v               ← stride-2 maxpool (L1/3/5/7/9)
 │                                   FSM 1 cycle/word, BRAM 1-cycle latency 정렬
@@ -94,7 +96,7 @@ yolo_engine.v ★ TOP — 22-layer 자동 추론 FSM (53 states: conv/pool/REPAC
 | L1, 3, 5, 7, 9 | maxpool s2 | `max_pool_unit` |
 | L11 | maxpool s1 | `max_pool_s1_unit` |
 | L18 | upsample | `upsample_unit` |
-| L16, L19 | Route | (no module — FSM skip + software DRAM 사전 배치) |
+| L16, L19 | Route | 연산 모듈 없음 — REPACK FSM 이 처리 (L16 = L12 OFM → L17 IFM, L19 = L18 OFM ‖ L8 OFM → L20 IFM) |
 | L15, L21 | YOLO output | (no module — FSM skip, software 후처리) |
 
 ## 4. Top FSM 흐름 (yolo_engine.v, 53 states — 아래는 개념적 흐름, 실제 state 명은 `S_LOAD_BIAS`/`S_RB_DMA_IFM`/`S_RP_*`/`S_L11_*`/`S_L18_*` 등)
