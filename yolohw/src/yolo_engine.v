@@ -1075,23 +1075,13 @@ module yolo_engine #(
     wire _unused_ifm_vld = ifm_vld;
     /* verilator lint_on UNUSED */
 
-    // 뱅크(워스트2): line_buf 입력 레지스터링 — conv_phase_r fanout 분산 +
-    //   line_buf 주소 경로 mux 끊기. conv 시작 전 안정 → 값·latency 동일.
-    reg [11:0] lb_w_blocks_r, lb_w_r, lb_h_r;
-    reg [7:0]  lb_ci_grps_r;
-    always @(posedge clk or negedge rstn)
-        if (!rstn) begin
-            lb_w_blocks_r <= 12'd0; lb_w_r <= 12'd0; lb_h_r <= 12'd0; lb_ci_grps_r <= 8'd0;
-        end else begin
-            lb_w_blocks_r <= cur_w_blocks; lb_w_r <= cur_w; lb_h_r <= cur_h; lb_ci_grps_r <= cur_ci_grps;
-        end
     ifm_line_buf u_line_buf (
         .clk(clk), .rstn(rstn),
         .i_mode(is_conv_1x1),   // 1×1 mode for L12, L14
-        .i_w_blocks(lb_w_blocks_r),
-        .i_ci_groups(lb_ci_grps_r),
-        .i_w(lb_w_r),
-        .i_h(lb_h_r),
+        .i_w_blocks(cur_w_blocks),
+        .i_ci_groups(cur_ci_grps),
+        .i_w(cur_w),
+        .i_h(cur_h),
         .i_line_valid(4'b1111),
         .i_dma_wr_en(lb_wr_en),
         .i_dma_wr_line(lb_wr_line),
@@ -1851,14 +1841,8 @@ module yolo_engine #(
     end
 
     // Pool IFM (= 이전 layer 의 OFM[fi]) : base + fi × ifm_fi_byte
-    // 뱅크(워스트1): cur_pool_ifm_fi_byte 레지스터링 — pool_phase_r fanout 분산 +
-    //   dma_rd_start_addr 경로 14-way mux 끊기. pool 처리 중 안정 → 값·latency 동일.
-    reg [31:0] cur_pool_ifm_fi_byte_r;
-    always @(posedge clk or negedge rstn)
-        if (!rstn) cur_pool_ifm_fi_byte_r <= 32'd0;
-        else       cur_pool_ifm_fi_byte_r <= cur_pool_ifm_fi_byte;
     wire [31:0] addr_pool_ifm_byte = dram_ofm_base + cur_pool_ifm_base_byte +
-                                     ({20'd0, fi_r} * cur_pool_ifm_fi_byte_r);
+                                     ({20'd0, fi_r} * cur_pool_ifm_fi_byte);
     // Pool OFM[fi]            : base + fi × ofm_fi_byte
     wire [31:0] addr_pool_ofm_byte = dram_ofm_base + cur_pool_ofm_base_byte +
                                      ({20'd0, fi_r} * cur_pool_ofm_fi_byte);

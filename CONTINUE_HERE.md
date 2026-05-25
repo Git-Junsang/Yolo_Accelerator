@@ -11,7 +11,7 @@
 |------|------|
 | 누산기(conv_top row_off) + bias흡수(mac_kern) + dma파이프라인(yolo_engine addr_ofm_byte_r) | ✅ 커밋됨(85cceefc) + 1회 빌드됨 |
 | **A: cur_w_half_r** (yolo_engine) | ✅ 적용+빌드(−0.183→−0.175) |
-| **뱅크: cur_pool_ifm_fi_byte_r + line_buf 입력 lb_*_r** (yolo_engine) | ✅ 적용, **빌드 대기** ← 여기부터 |
+| ~~뱅크: cur_pool_ifm_fi_byte_r + line_buf lb_*_r~~ | ❌ **역효과(−1.847), 되돌림.** RTL fanout 수정은 placement 악화 → 접음. **A만 = −0.175 가 최선** |
 
 ## 핵심 진단 (왜 뱅크인가)
 - 워스트 = `conv_phase_r`/`pool_phase_r` **fanout(24804) + route 68%** (logic 깊이 아님!)
@@ -19,16 +19,23 @@
 - **정답 = 뱅크**: phase 기반 `cur_*` 신호를 레지스터로 → fanout 분산. **값·latency 동일(conv/pool 중 안정) = mAP 안전.**
 - whack-a-mole: A로 conv경로(−0.183→−0.094) 잡으니 pool경로(−0.175) 드러남 → 뱅크로 둘 다 공략 중.
 
-## 바로 할 일 (순서)
-1. **TB 검증**: `l13_verify_tb` (또는 l0/l13) — line_buf 입력 바꿨으니 OFM 일치 확인 (값-동일이라 PASS 예상)
-2. **빌드**: Windows Vivado Tcl Console
+## 바로 할 일 (RTL 접음 → impl 로 −0.175 closing)
+현재 A만 적용 = **WNS −0.175 @81.25** (TNS −0.603, 거의 닫힘). 워스트는 route/fanout이라
+**impl(배치)** 로 공략 (RTL fanout 수정은 뱅크·B 모두 역효과 확인됨 → ⚠️ 하지 말 것):
+1. **impl 전략+시드** (Windows Vivado Tcl):
    ```tcl
-   source {Z:/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/fpga/IP_PACKAGING/fpga_yolohw/update_ip_and_build.tcl}
+   current_project fpga_yolohw
+   set_property strategy Performance_Explore [get_runs impl_1]
+   reset_run impl_1
+   launch_runs impl_1 -to_step write_bitstream -jobs 8 ; wait_on_run impl_1
+   open_run impl_1 ; report_timing_summary
    ```
-   (New Project 뜨면 `current_project fpga_yolohw` 로 잡고 `get_runs` 확인)
-3. **WNS 확인**: `open_run impl_1; report_timing_summary`
-   - **양수 → 81.25MHz working bit 완성** 🎉
-   - 음수 → 새 phase 워스트도 **같은 뱅크 방식**으로 (다 값-동일 안전)
+   안 되면 다른 전략(Performance_ExtraTimingOpt / RefinePlacement) 또는 시드 변경 반복.
+2. **floorplan**: conv + dma 로직만(BRAM 제외, BRAM 96% 포화) Pblock 으로 근접 배치.
+3. 양수 → **81.25MHz working bit 완성**. (이후 100MHz 도메인 전환은 HANDOFF 참조)
+
+> ⚠️ 핵심 교훈: 워스트가 route/fanout(logic 깊이 아님)이라 **RTL 로 fanout 건드리면 placement 악화**.
+>   누산기/bias/dma(logic 깊이)는 RTL 로 성공했지만, 이 잔여 −0.175 는 impl/floorplan 영역.
 
 ## 환경 / 함정
 - Vivado 2025(Windows). SoC 프로젝트: `Z:/.../yolohw/fpga/IP_PACKAGING/fpga_yolohw/fpga_yolohw.xpr`
