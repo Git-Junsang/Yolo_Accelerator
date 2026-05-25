@@ -45,7 +45,7 @@
 // 포트 (추가된 사용자 포트):
 //   ctrl_reg0~3    : slv_reg0~3 의 직접 출력 → yolo_engine.v에서 제어에 사용
 //   network_done   : 추론 완료 신호 (yolo_engine.v에서 입력, slv_reg0 읽기에 삽입)
-//   network_done_led: LED 표시용 (현재 미사용, 포트만 선언)
+//   (LED 표시 출력은 yolo_engine.v 최상위에서 network_done_r 로 직접 구동)
 //================================================================
 
 module yolo_engine_axi #
@@ -67,7 +67,6 @@ module yolo_engine_axi #
     output wire [31:0] ctrl_reg2,      // slv_reg2: dram_ifm_base (IFM DRAM 주소)
     output wire [31:0] ctrl_reg3,      // slv_reg3: dram_ofm_base (OFM DRAM 주소)
     input  wire network_done,          // 추론 완료 신호 → ctrl_reg0 읽기 bit[1]에 삽입
-    input  wire network_done_led,      // LED 표시용 (현재 미사용)
     // User ports ends
     // Do not modify the ports beyond this line
 

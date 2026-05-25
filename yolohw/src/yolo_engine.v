@@ -771,6 +771,14 @@ module yolo_engine #(
     wire [11:0] cur_w          = is_conv_l20 ? L20_W : is_conv_l17 ? L17_W       : is_conv_l14 ? L14_W       : is_conv_l13 ? L13_W       : is_conv_l12 ? L12_W       : is_conv_l10 ? L10_W       : is_conv_l8 ? L8_W       : is_conv_l6 ? L6_W       : is_conv_l4 ? L4_W       : is_conv_l2 ? L2_W       : L0_W;
     wire [11:0] cur_h          = is_conv_l20 ? L20_H : is_conv_l17 ? L17_H       : is_conv_l14 ? L14_H       : is_conv_l13 ? L13_H       : is_conv_l12 ? L12_H       : is_conv_l10 ? L10_H       : is_conv_l8 ? L8_H       : is_conv_l6 ? L6_H       : is_conv_l4 ? L4_H       : is_conv_l2 ? L2_H       : L0_H;
     wire [11:0] cur_w_half     = is_conv_l20 ? L20_W_HALF : is_conv_l17 ? L17_W_HALF  : is_conv_l14 ? L14_W_HALF  : is_conv_l13 ? L13_W_HALF  : is_conv_l12 ? L12_W_HALF  : is_conv_l10 ? L10_W_HALF  : is_conv_l8 ? L8_W_HALF  : is_conv_l6 ? L6_W_HALF  : is_conv_l4 ? L4_W_HALF  : is_conv_l2 ? L2_W_HALF  : L0_W_HALF;
+    // cur_w_half 레지스터링: conv_phase_r(fanout 24804) → 14-way mux 를 line_buf
+    //   주소 경로에서 끊어 fanout 분산 + logic 단축. conv 는 레이어 전환 후 여러
+    //   state(bias/IFM/wgt load) 뒤 시작하므로 한 박자 지연돼도 conv 중 안정(값 동일).
+    reg  [11:0] cur_w_half_r;
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) cur_w_half_r <= 12'd0;
+        else       cur_w_half_r <= cur_w_half;
+    end
     wire [11:0] cur_h_half     = is_conv_l20 ? L20_H_HALF : is_conv_l17 ? L17_H_HALF  : is_conv_l14 ? L14_H_HALF  : is_conv_l13 ? L13_H_HALF  : is_conv_l12 ? L12_H_HALF  : is_conv_l10 ? L10_H_HALF  : is_conv_l8 ? L8_H_HALF  : is_conv_l6 ? L6_H_HALF  : is_conv_l4 ? L4_H_HALF  : is_conv_l2 ? L2_H_HALF  : L0_H_HALF;
     wire [11:0] cur_co         = is_conv_l20 ? L20_CO      : is_conv_l17 ? L17_CO      : is_conv_l14 ? L14_CO      : is_conv_l13 ? L13_CO      : is_conv_l12 ? L12_CO      : is_conv_l10 ? L10_CO      : is_conv_l8 ? L8_CO      : is_conv_l6 ? L6_CO      : is_conv_l4 ? L4_CO      : is_conv_l2 ? L2_CO      : L0_CO;
     wire [7:0]  cur_acc_len    = is_conv_l20 ? L20_ACC_LEN : is_conv_l17 ? L17_ACC_LEN : is_conv_l14 ? L14_ACC_LEN : is_conv_l13 ? L13_ACC_LEN : is_conv_l12 ? L12_ACC_LEN : is_conv_l10 ? L10_ACC_LEN : is_conv_l8 ? L8_ACC_LEN : is_conv_l6 ? L6_ACC_LEN : is_conv_l4 ? L4_ACC_LEN : is_conv_l2 ? L2_ACC_LEN : L0_ACC_LEN;
@@ -1067,13 +1075,23 @@ module yolo_engine #(
     wire _unused_ifm_vld = ifm_vld;
     /* verilator lint_on UNUSED */
 
+    // 뱅크(워스트2): line_buf 입력 레지스터링 — conv_phase_r fanout 분산 +
+    //   line_buf 주소 경로 mux 끊기. conv 시작 전 안정 → 값·latency 동일.
+    reg [11:0] lb_w_blocks_r, lb_w_r, lb_h_r;
+    reg [7:0]  lb_ci_grps_r;
+    always @(posedge clk or negedge rstn)
+        if (!rstn) begin
+            lb_w_blocks_r <= 12'd0; lb_w_r <= 12'd0; lb_h_r <= 12'd0; lb_ci_grps_r <= 8'd0;
+        end else begin
+            lb_w_blocks_r <= cur_w_blocks; lb_w_r <= cur_w; lb_h_r <= cur_h; lb_ci_grps_r <= cur_ci_grps;
+        end
     ifm_line_buf u_line_buf (
         .clk(clk), .rstn(rstn),
         .i_mode(is_conv_1x1),   // 1×1 mode for L12, L14
-        .i_w_blocks(cur_w_blocks),
-        .i_ci_groups(cur_ci_grps),
-        .i_w(cur_w),
-        .i_h(cur_h),
+        .i_w_blocks(lb_w_blocks_r),
+        .i_ci_groups(lb_ci_grps_r),
+        .i_w(lb_w_r),
+        .i_h(lb_h_r),
         .i_line_valid(4'b1111),
         .i_dma_wr_en(lb_wr_en),
         .i_dma_wr_line(lb_wr_line),
@@ -1125,7 +1143,7 @@ module yolo_engine #(
         .i_mode(is_conv_1x1),         // 1=1×1 mode (L12, L14), 0=3×3 mode
         .i_relu_en(!is_conv_l14 && !is_conv_l20),  // L14/L20 (detection head) ReLU off
 
-        .i_ofm_w_half(cur_w_half),
+        .i_ofm_w_half(cur_w_half_r),  // 레지스터링(fanout 분산, latency 0)
         .i_ofm_h_half(12'd1),
         .i_row_start(rb_r),
         .i_co_total(12'd1),
@@ -1833,8 +1851,14 @@ module yolo_engine #(
     end
 
     // Pool IFM (= 이전 layer 의 OFM[fi]) : base + fi × ifm_fi_byte
+    // 뱅크(워스트1): cur_pool_ifm_fi_byte 레지스터링 — pool_phase_r fanout 분산 +
+    //   dma_rd_start_addr 경로 14-way mux 끊기. pool 처리 중 안정 → 값·latency 동일.
+    reg [31:0] cur_pool_ifm_fi_byte_r;
+    always @(posedge clk or negedge rstn)
+        if (!rstn) cur_pool_ifm_fi_byte_r <= 32'd0;
+        else       cur_pool_ifm_fi_byte_r <= cur_pool_ifm_fi_byte;
     wire [31:0] addr_pool_ifm_byte = dram_ofm_base + cur_pool_ifm_base_byte +
-                                     ({20'd0, fi_r} * cur_pool_ifm_fi_byte);
+                                     ({20'd0, fi_r} * cur_pool_ifm_fi_byte_r);
     // Pool OFM[fi]            : base + fi × ofm_fi_byte
     wire [31:0] addr_pool_ofm_byte = dram_ofm_base + cur_pool_ofm_base_byte +
                                      ({20'd0, fi_r} * cur_pool_ofm_fi_byte);
