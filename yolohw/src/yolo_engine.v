@@ -617,7 +617,11 @@ module yolo_engine #(
     //----------------------------------------------------------------
     wire [31:0] ctrl_reg0, ctrl_reg1, ctrl_reg2, ctrl_reg3;
     reg         network_done_r;
-    assign o_network_done = network_done_r;
+    // 두 LED 출력 모두 network_done_r 로 구동 (보드 데모용 상태 표시).
+    //   이전: network_done_led 가 AXI 서브모듈의 input 포트에 물려 구동 소스가 없어
+    //         BD 합성 시 "NET has no source → grounded" 경고 발생. 직접 구동으로 수정.
+    assign o_network_done   = network_done_r;
+    assign network_done_led = network_done_r;
 
     yolo_engine_axi #(
         .C_S_AXI_DATA_WIDTH (C_S_AXI_DATA_WIDTH),
@@ -626,7 +630,6 @@ module yolo_engine #(
         .ctrl_reg0(ctrl_reg0), .ctrl_reg1(ctrl_reg1),
         .ctrl_reg2(ctrl_reg2), .ctrl_reg3(ctrl_reg3),
         .network_done(network_done_r),
-        .network_done_led(network_done_led),
         .S_AXI_ACLK(clk), .S_AXI_ARESETN(rstn),
         .S_AXI_AWADDR(S_AXI_AWADDR), .S_AXI_AWPROT(S_AXI_AWPROT),
         .S_AXI_AWVALID(S_AXI_AWVALID), .S_AXI_AWREADY(S_AXI_AWREADY),
@@ -1057,6 +1060,7 @@ module yolo_engine #(
     wire         conv_ifm_re;
     wire [11:0]  conv_ifm_row, conv_ifm_col;
     wire [7:0]   conv_ifm_acc;
+    wire [22:0]  conv_ifm_row_off;   // conv_top 누산 row_off (= acc*w_blocks), DSP 곱셈 대체
     wire [287:0] ifm_00, ifm_01, ifm_10, ifm_11;
     wire         ifm_vld;
     /* verilator lint_off UNUSED */
@@ -1078,6 +1082,7 @@ module yolo_engine #(
         .i_rd_en(conv_ifm_re),
         .i_rb(conv_ifm_row), .i_cb(conv_ifm_col),
         .i_acc_cyc(conv_ifm_acc),
+        .i_row_off(conv_ifm_row_off),
         .o_ifm_00(ifm_00), .o_ifm_01(ifm_01),
         .o_ifm_10(ifm_10), .o_ifm_11(ifm_11),
         .o_vld(ifm_vld)
@@ -1125,6 +1130,7 @@ module yolo_engine #(
         .i_row_start(rb_r),
         .i_co_total(12'd1),
         .i_acc_len(cur_acc_len),
+        .i_w_blocks(cur_w_blocks),
         .i_wgt_base(conv_wgt_base),
         .i_bias_base(conv_bias_base),
         .i_shift(cur_shift),
@@ -1134,6 +1140,7 @@ module yolo_engine #(
         .o_ifm_row(conv_ifm_row),
         .o_ifm_col(conv_ifm_col),
         .o_ifm_acc(conv_ifm_acc),
+        .o_ifm_row_off(conv_ifm_row_off),
         .i_ifm_00(ifm_00), .i_ifm_01(ifm_01),
         .i_ifm_10(ifm_10), .i_ifm_11(ifm_11),
         .o_pixel(conv_pixel),
@@ -1806,9 +1813,24 @@ module yolo_engine #(
                                   is_conv_l6  ? 32'd64    :
                                   is_conv_l4  ? 32'd128   :
                                   is_conv_l2  ? 32'd256   : 32'd512;
-    wire [31:0] addr_ofm_byte = cur_ofm_layer_base +
-                                ({20'd0, fi_r} * cur_ofm_fi_byte) +
-                                ({20'd0, rb_r} * cur_ofm_rb_byte);
+    // addr_ofm_byte 2-stage 파이프라인 (DSP 곱셈을 dma_wr_start_addr 크리티컬 경로에서 분리).
+    //   fi_r/rb_r 은 conv(S_FIL_CONV_START/WAIT, 수십+ cycle) 동안 안정 → store(S_FIL_DMA_STORE)
+    //   진입 전 미리 계산 완료. 값 동일(store 시점 fi_r/rb_r 기준), latency 영향 없음.
+    //   stage1: 곱셈 2개 + base 레지스터 / stage2: 덧셈 → logic depth 대폭 단축.
+    reg [31:0] ofm_mul_fi_r, ofm_mul_rb_r, ofm_base_r, addr_ofm_byte_r;
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            ofm_mul_fi_r    <= 32'd0;
+            ofm_mul_rb_r    <= 32'd0;
+            ofm_base_r      <= 32'd0;
+            addr_ofm_byte_r <= 32'd0;
+        end else begin
+            ofm_mul_fi_r    <= {20'd0, fi_r} * cur_ofm_fi_byte;   // stage1: 곱셈(DSP)
+            ofm_mul_rb_r    <= {20'd0, rb_r} * cur_ofm_rb_byte;
+            ofm_base_r      <= cur_ofm_layer_base;
+            addr_ofm_byte_r <= ofm_base_r + ofm_mul_fi_r + ofm_mul_rb_r;  // stage2: 덧셈
+        end
+    end
 
     // Pool IFM (= 이전 layer 의 OFM[fi]) : base + fi × ifm_fi_byte
     wire [31:0] addr_pool_ifm_byte = dram_ofm_base + cur_pool_ifm_base_byte +
@@ -1956,7 +1978,7 @@ module yolo_engine #(
                 //------------------------------------------------
                 S_FIL_DMA_STORE: begin
                     dma_wr_num_trans        <= cur_ofm_fil;
-                    dma_wr_start_addr       <= addr_ofm_byte;
+                    dma_wr_start_addr       <= addr_ofm_byte_r;  // 2-stage 파이프라인 결과(값 동일)
                     dpram_store_addr_init_r <= 16'd0;
                     dma_wr_start            <= 1'b1;
                     state_r                 <= S_FIL_DMA_STORE_WAIT;

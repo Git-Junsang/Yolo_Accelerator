@@ -44,6 +44,7 @@ module conv_top(
     input  [11:0]      i_row_start,    // 시작 row_idx (row-streaming: rb 번호, 일반: 0)
     input  [11:0]      i_co_total,     // 출력 filter 수
     input  [7:0]       i_acc_len,      // 한 spatial 의 누적 cycle 수
+    input  [11:0]      i_w_blocks,     // ceil(W/4) — line_buf row_off 누산용 (DSP 곱셈 대체)
     input  [9:0]       i_wgt_base,     // weight buffer 시작 entry (288-bit entry)
     input  [11:0]      i_bias_base,    // bias buffer 시작 entry (32-bit entry)
     input  [4:0]       i_shift,
@@ -63,6 +64,7 @@ module conv_top(
     output [11:0]      o_ifm_row,
     output [11:0]      o_ifm_col,
     output [7:0]       o_ifm_acc,
+    output [22:0]      o_ifm_row_off,  // = o_ifm_acc * i_w_blocks (line_buf 곱셈 대체)
     input  [287:0]     i_ifm_00,
     input  [287:0]     i_ifm_01,
     input  [287:0]     i_ifm_10,
@@ -92,6 +94,7 @@ module conv_top(
     reg [11:0] row_idx;
     reg [11:0] col_idx;
     reg [7:0]  acc_cyc;
+    reg [22:0] row_off_r;      // = acc_cyc * i_w_blocks (acc_cyc 와 동기 누산, DSP 곱셈 대체)
     reg [9:0]  wgt_addr_r;     // 다음 cycle 의 BRAM read addr
     reg [9:0]  wgt_base_r;     // 현재 filter 의 weight base
     reg [11:0] bias_addr_r;
@@ -204,6 +207,7 @@ module conv_top(
             row_idx        <= 12'd0;
             col_idx        <= 12'd0;
             acc_cyc        <= 8'd0;
+            row_off_r      <= 23'd0;
             wgt_addr_r     <= 10'd0;
             wgt_base_r     <= 10'd0;
             bias_addr_r    <= 12'd0;
@@ -216,6 +220,7 @@ module conv_top(
                     row_idx        <= i_row_start;
                     col_idx        <= 12'd0;
                     acc_cyc        <= 8'd0;
+                    row_off_r      <= 23'd0;
                     wgt_addr_r     <= i_wgt_base;
                     wgt_base_r     <= i_wgt_base;
                     bias_addr_r    <= i_bias_base;
@@ -234,6 +239,7 @@ module conv_top(
                     row_idx <= i_row_start;
                     col_idx <= 12'd0;
                     acc_cyc <= 8'd0;
+                    row_off_r <= 23'd0;
                     out_cnt <= 24'd0;
                 end
 
@@ -249,6 +255,7 @@ module conv_top(
                     if (acc_cyc == i_acc_len - 8'd1) begin
                         // spatial transition
                         acc_cyc    <= 8'd0;
+                        row_off_r  <= 23'd0;
                         wgt_addr_r <= wgt_base_r;
                         if (col_idx == i_ofm_w_half - 1) begin
                             col_idx <= 12'd0;
@@ -258,6 +265,7 @@ module conv_top(
                     end
                     else begin
                         acc_cyc    <= acc_cyc + 8'd1;
+                        row_off_r  <= row_off_r + {11'd0, i_w_blocks};
                         wgt_addr_r <= wgt_addr_r + 10'd1;
                     end
                     if (mac_pixel_vld) out_cnt <= out_cnt + 24'd1;
@@ -308,6 +316,8 @@ module conv_top(
     wire        lah_col_last = (col_idx  == i_ofm_w_half - 12'd1);
     wire        lah_row_last = (row_idx  == row_last_idx);
     wire [7:0]  lah_acc = lah_acc_last ? 8'd0 : acc_cyc + 8'd1;
+    // row_off look-ahead: o_ifm_acc * i_w_blocks 와 항상 동일 (곱셈 대신 누산)
+    wire [22:0] lah_row_off = lah_acc_last ? 23'd0 : row_off_r + {11'd0, i_w_blocks};
     wire [11:0] lah_col = lah_acc_last ? (lah_col_last ? 12'd0 : col_idx + 12'd1) : col_idx;
     wire [11:0] lah_row = (lah_acc_last && lah_col_last) ?
                           (lah_row_last ? i_row_start : row_idx + 12'd1) : row_idx;
@@ -316,6 +326,7 @@ module conv_top(
     assign o_ifm_row   = (cstate == ST_RUN) ? lah_row : row_idx;
     assign o_ifm_col   = (cstate == ST_RUN) ? lah_col : col_idx;
     assign o_ifm_acc   = (cstate == ST_RUN) ? lah_acc : acc_cyc;
+    assign o_ifm_row_off = (cstate == ST_RUN) ? lah_row_off : row_off_r;
 
     assign o_done      = (cstate == ST_DONE);
 

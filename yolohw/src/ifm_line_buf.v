@@ -71,6 +71,7 @@ module ifm_line_buf(
     input  [11:0]      i_rb,              // OFM half-row index (=row_idx)
     input  [11:0]      i_cb,              // OFM half-col index (=col_idx)
     input  [7:0]       i_acc_cyc,
+    input  [22:0]      i_row_off,         // = i_acc_cyc * i_w_blocks (conv_top 누산값, DSP 곱셈 대체)
 
     output reg [287:0] o_ifm_00,
     output reg [287:0] o_ifm_01,
@@ -87,7 +88,7 @@ module ifm_line_buf(
     wire signed [13:0] base_entry_s   = col_start_s >>> 2;
     wire        [1:0]  offset_3x3     = col_start_s[1:0];
 
-    wire [22:0] row_off       = i_acc_cyc * i_w_blocks;
+    wire [22:0] row_off       = i_row_off;   // (구)i_acc_cyc*i_w_blocks → conv_top 누산값
     wire [10:0] base_entry_u  = base_entry_s[10:0];
     wire [10:0] rd_addr_a_3x3 = row_off[10:0] + base_entry_u;
     wire [10:0] rd_addr_b_3x3 = row_off[10:0] + base_entry_u + 11'd1;
@@ -137,8 +138,8 @@ module ifm_line_buf(
     //     공급 → 36-byte ifm 중 (acc_cyc mod 9) group 만 valid.
     //   현실적 단순화 → 1×1 layer 의 acc_len 을 ci_groups (Ci/4) 단위로 운용.
     //----------------------------------------------------------------
-    wire [22:0] addr_1x1_a_long = i_acc_cyc * i_w_blocks + {11'd0, col_block_1x1};
-    wire [22:0] addr_1x1_b_long = i_acc_cyc * i_w_blocks + {11'd0, col_block_1x1} + 23'd1;
+    wire [22:0] addr_1x1_a_long = i_row_off + {11'd0, col_block_1x1};
+    wire [22:0] addr_1x1_b_long = i_row_off + {11'd0, col_block_1x1} + 23'd1;
     wire [10:0] rd_addr_a_1x1   = addr_1x1_a_long[10:0];
     wire [10:0] rd_addr_b_1x1   = addr_1x1_b_long[10:0];
 

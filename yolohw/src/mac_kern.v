@@ -99,10 +99,13 @@ module mac_kern(
             acc_done <= 1'b0;
             if (mac_vld) begin
                 if (cyc_cnt == 8'd0) begin
-                    psum_00 <= $signed(mac_00);
-                    psum_01 <= $signed(mac_01);
-                    psum_10 <= $signed(mac_10);
-                    psum_11 <= $signed(mac_11);
+                    // A(bias 흡수): 첫 사이클 누적 초기값에 bias 를 더함.
+                    //   acc_result = sum + bias (덧셈 결합법칙 → 값 100% 동일, latency 불변).
+                    //   → post_process 의 (acc_result + bias) 32-bit 덧셈(CARRY4 ~8) 제거 → logic 단축.
+                    psum_00 <= $signed(mac_00) + i_bias;
+                    psum_01 <= $signed(mac_01) + i_bias;
+                    psum_10 <= $signed(mac_10) + i_bias;
+                    psum_11 <= $signed(mac_11) + i_bias;
                 end else begin
                     psum_00 <= psum_00 + $signed(mac_00);
                     psum_01 <= psum_01 + $signed(mac_01);
@@ -131,25 +134,25 @@ module mac_kern(
     post_process u_pp_00 (
         .clk(clk), .rstn(rstn),
         .acc_done(acc_done), .acc_result(psum_00),
-        .bias(i_bias), .shift_amount(i_shift), .i_relu_en(i_relu_en),
+        .bias(32'sd0), .shift_amount(i_shift), .i_relu_en(i_relu_en),  // bias 는 accumulator 에 흡수됨(A)
         .pixel_out(px_00), .output_valid(vld_00)
     );
     post_process u_pp_01 (
         .clk(clk), .rstn(rstn),
         .acc_done(acc_done), .acc_result(psum_01),
-        .bias(i_bias), .shift_amount(i_shift), .i_relu_en(i_relu_en),
+        .bias(32'sd0), .shift_amount(i_shift), .i_relu_en(i_relu_en),  // bias 는 accumulator 에 흡수됨(A)
         .pixel_out(px_01), .output_valid(vld_01)
     );
     post_process u_pp_10 (
         .clk(clk), .rstn(rstn),
         .acc_done(acc_done), .acc_result(psum_10),
-        .bias(i_bias), .shift_amount(i_shift), .i_relu_en(i_relu_en),
+        .bias(32'sd0), .shift_amount(i_shift), .i_relu_en(i_relu_en),  // bias 는 accumulator 에 흡수됨(A)
         .pixel_out(px_10), .output_valid(vld_10)
     );
     post_process u_pp_11 (
         .clk(clk), .rstn(rstn),
         .acc_done(acc_done), .acc_result(psum_11),
-        .bias(i_bias), .shift_amount(i_shift), .i_relu_en(i_relu_en),
+        .bias(32'sd0), .shift_amount(i_shift), .i_relu_en(i_relu_en),  // bias 는 accumulator 에 흡수됨(A)
         .pixel_out(px_11), .output_valid(vld_11)
     );
 
