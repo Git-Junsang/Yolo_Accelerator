@@ -1,0 +1,21 @@
+
+****** Vivado v2025.2 (64-bit)
+  **** SW Build 6299465 on Fri Nov 14 19:35:11 GMT 2025
+  **** IP Build 6300035 on Fri Nov 14 10:48:45 MST 2025
+  **** SharedData Build 6298862 on Thu Nov 13 04:50:51 MST 2025
+  **** Start of session at: Mon May 25 14:26:29 2026
+    ** Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+    ** Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+
+source floorplan_conv.tcl
+# set XPR {Z:/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/fpga/IP_PACKAGING/fpga_yolohw/fpga_yolohw.xpr}
+# set XDC {Z:/2026 CAU/AIX2026/git/Yolo_Accelerator/yolohw/fpga/IP_PACKAGING/fpga_yolohw/pblock_conv.xdc}
+# puts "=========================================="
+==========================================
+# puts "  Floorplan: pblock_conv via XDC"
+  Floorplan: pblock_conv via XDC
+# puts "=========================================="
+==========================================
+# open_project $XPR
+Scanning sources...
+Finished scanning sources

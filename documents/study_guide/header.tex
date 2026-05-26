@@ -1,0 +1,67 @@
+% ============================================================
+% study_guide PDF 조판 헤더 (pandoc -H 로 주입)
+% ============================================================
+
+% ----- 줄 간격 / 문단 -----
+\usepackage{setspace}
+\setstretch{1.25}
+\setlength{\parskip}{0.55em plus 0.1em}
+\setlength{\parindent}{0pt}
+
+% ----- 단어 줄바꿈(영문 긴 식별자) 허용, 과한 hyphen 억제 -----
+\usepackage{microtype}
+\tolerance=2000
+\emergencystretch=2em
+\hyphenpenalty=2000
+\sloppy
+
+% ----- 리스트 간격/들여쓰기 -----
+\usepackage{enumitem}
+\setlist{itemsep=2pt, parsep=1pt, topsep=3pt, leftmargin=1.5em}
+
+% ----- 표 행 간격 -----
+\renewcommand{\arraystretch}{1.25}
+
+% ----- 섹션 제목 위아래 간격 -----
+\usepackage{titlesec}
+\titlespacing*{\section}{0pt}{1.4em}{0.6em}
+\titlespacing*{\subsection}{0pt}{1.0em}{0.4em}
+
+% ----- 이미지: 최대 크기 제한 + 중앙 (원본보다 확대하지 않음 → 항상 선명, 크기 일관) -----
+\usepackage{graphicx}
+\usepackage[export]{adjustbox}
+\let\origincludegraphics\includegraphics
+\renewcommand{\includegraphics}[2][]{%
+  \origincludegraphics[#1,max width=0.74\linewidth,max totalheight=0.6\textheight,center]{#2}}
+
+% ----- 코드 / 블록 다이어그램 / 트리 = 인용구식 박스 -----
+\usepackage{fancyvrb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable,skins}
+\definecolor{codebg}{RGB}{247,248,250}
+\definecolor{codeframe}{RGB}{203,209,217}
+
+% (1) 언어 지정 코드블록 = pandoc Shaded 환경 (highlight 미사용 대비 가드)
+\makeatletter
+\@ifundefined{Shaded}{\newenvironment{Shaded}{}{}}{}
+\makeatother
+\renewenvironment{Shaded}{%
+  \begin{tcolorbox}[breakable, enhanced, arc=2pt, boxrule=0.4pt,
+    colback=codebg, colframe=codeframe,
+    left=7pt, right=7pt, top=4pt, bottom=4pt,
+    before skip=7pt, after skip=9pt]%
+  \footnotesize}{%
+  \end{tcolorbox}}
+
+% (2) plain 코드블록·ASCII 다이어그램·트리 = pandoc verbatim 환경 → 박스
+%     fancyvrb Verbatim 을 tcolorbox 로 감싸 재정의
+\renewenvironment{verbatim}{%
+  \VerbatimEnvironment
+  \begin{tcolorbox}[breakable, enhanced, arc=2pt, boxrule=0.4pt,
+    colback=codebg, colframe=codeframe,
+    left=7pt, right=7pt, top=3pt, bottom=3pt,
+    before skip=7pt, after skip=9pt]%
+  \begin{Verbatim}[fontsize=\footnotesize]}{%
+  \end{Verbatim}\end{tcolorbox}}
+
+\fvset{baselinestretch=1.0}

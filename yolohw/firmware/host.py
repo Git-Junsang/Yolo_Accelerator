@@ -15,13 +15,11 @@ YOLOv2 FPGA Accelerator — Host PC UART 클라이언트 (Phase 3)
   # UART 통신 테스트만
   python host.py --port /dev/ttyUSB1 --hello
 
-추론 시퀀스 (double-inference, L19 concat 포함):
+추론 시퀀스 (단일 추론 — RTL 이 L19 ROUTE concat 을 내부 처리):
   1. Weight + Bias DRAM 적재  (MODE_STORE_RAM)
   2. IFM 적재                  (MODE_STORE_RAM)
-  3. 1차 추론  L0→L21          (MODE_RUN_ENGINE)
-  4. L19 concat  L8→L18 뒤     (MODE_CONCAT_L19)
-  5. 2차 추론  L0→L21          (MODE_RUN_ENGINE)
-  6. YOLO 후처리 + 결과 수신    (MODE_YOLO_POST)
+  3. 추론  L0→L20 (L19 concat 포함)  (MODE_RUN_ENGINE)
+  4. YOLO 후처리 + 결과 수신    (MODE_YOLO_POST)
 """
 
 import serial
@@ -47,7 +45,6 @@ MODE_TEST_ECHO  = 0x02
 MODE_STORE_RAM  = 0x03
 MODE_LOAD_RAM   = 0x04
 MODE_RUN_ENGINE = 0x06
-MODE_CONCAT_L19 = 0x07
 MODE_YOLO_POST  = 0x08
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -177,11 +174,6 @@ def cmd_run_engine(ser, timeout_s=300):
     recv_ack(ser, 'engine_done')  # "Engine complete " (완료 후)
     ser.timeout = old_to
     print(f' 완료 ({time.time()-t0:.1f}초)')
-
-def cmd_concat_l19(ser):
-    """MODE_CONCAT_L19: L8 OFM → L18 OFM 직후 DRAM memcpy"""
-    ser.write(bytes([MODE_CONCAT_L19]))
-    recv_ack(ser, 'concat')   # "Concat Done     "
 
 def cmd_yolo_post(ser):
     """MODE_YOLO_POST: DRAM OFM → Sigmoid/NMS → Detection 목록 수신
@@ -446,20 +438,12 @@ def main():
     ifm_buf = pack_ifm(args.image)
     cmd_store_ram(ser, DDR2_OFF_IFM, ifm_buf, 'IFM')
 
-    # ── 1차 추론: L0 → L21 전 layer 완주 ─────────────────────────────────────
-    print('[6] 1차 추론 (22-layer)...')
-    cmd_run_engine(ser)
-
-    # ── L19 concat: L8 OFM(16384 words)을 L18 OFM 직후에 복사 ─────────────────
-    print('    L19 concat (L8 OFM → L18 OFM 직후)...')
-    cmd_concat_l19(ser)
-
-    # ── 2차 추론: concat 반영 후 L20 재계산 ───────────────────────────────────
-    print('    2차 추론 (L20 재계산)...')
+    # ── 추론: L0 → L20 완주 (L19 ROUTE concat 은 RTL 내부 DMA 처리) ───────────
+    print('[6] 추론 (22-layer, 단일 추론)...')
     cmd_run_engine(ser)
 
     # ── YOLO 후처리 ────────────────────────────────────────────────────────────
-    print('[7] YOLO 후처리 (Sigmoid/Softmax/NMS)...')
+    print('[7] YOLO 후처리 (Sigmoid/NMS)...')
     dets = cmd_yolo_post(ser)
     ser.close()
 

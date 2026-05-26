@@ -3,15 +3,21 @@
  *
  * 수정 이력:
  *   Phase 3: 22-layer 프로토콜, 레지스터 맵 수정, 폴링 완성, YOLO 후처리 추가
+ *   Phase 3 (단일 추론): RTL 이 L19 ROUTE concat 을 내부 DMA 로 처리하도록 통합되어
+ *     double-inference + host concat 가 불필요해짐. MODE_CONCAT_L19 제거, 단일 RUN_ENGINE
+ *     한 번으로 L0~L20(L19 concat 포함) 전체 완료. 후처리는 skeleton C ([yolo] 레이어)와 정합:
+ *       - OFM 역양자화: float logit = (int8)byte / qscale  (L14: /8, L20: /1)
+ *       - 박스 디코드: x,y=grid 정규화, w,h=입력(256) 정규화
+ *       - 클래스: per-class sigmoid (softmax 아님), score = sigmoid(obj) × sigmoid(cls)
+ *       - OFM DRAM 레이아웃 = conv 2×2-packed (channel-major), de-pack 필요
  *
  * UART 프로토콜 (Host PC ↔ MicroBlaze):
  *   0x01 MODE_TEST_HELLO   → 16바이트 "Hello, World!" 응답
  *   0x02 MODE_TEST_ECHO    → 16바이트 수신 후 그대로 송신
  *   0x03 MODE_STORE_RAM    → [4B addr][4B word_count] → word_count × 4B DRAM 쓰기
  *   0x04 MODE_LOAD_RAM     → [4B addr][4B word_count] → word_count × 4B DRAM 읽기
- *   0x06 MODE_RUN_ENGINE   → YOLO 추론 실행 (ap_start → network_done 폴링)
- *   0x07 MODE_CONCAT_L19   → L8 OFM을 L19 concat 위치로 DRAM 복사
- *   0x08 MODE_YOLO_POST    → OFM 읽기 → Sigmoid/Softmax/NMS → 결과 송신
+ *   0x06 MODE_RUN_ENGINE   → YOLO 추론 실행 (ap_start → network_done 폴링, 단일 추론)
+ *   0x08 MODE_YOLO_POST    → OFM 읽기 → Sigmoid/NMS → 결과 송신
  *
  * DRAM 레이아웃:
  *   dram_wgt_base  = MIG_BASE + 0x0000_0000  (weight: 22-layer 전체)
@@ -43,7 +49,6 @@
 #define MODE_STORE_RAM    0x03
 #define MODE_LOAD_RAM     0x04
 #define MODE_RUN_ENGINE   0x06
-#define MODE_CONCAT_L19   0x07
 #define MODE_YOLO_POST    0x08
 
 /* ── DRAM 레이아웃 상수 (byte 주소, MIG_BASE 기준 offset) ── */
@@ -57,15 +62,13 @@
 #define DRAM_IFM_BASE   (DDR2_BASE + IFM_OFFSET_BYTES)
 #define DRAM_OFM_BASE   (DDR2_BASE + OFM_OFFSET_BYTES)
 
-/* ── Per-layer OFM DRAM word offset (yolo_engine.v 테이블과 동일) ── */
-#define L8_OFM_WORD_OFFSET   614400u
-#define L18_OFM_WORD_OFFSET  668720u
-#define L18_OFM_WORD_SIZE    8192u
-#define L14_OFM_WORD_OFFSET  663552u
-#define L14_OFM_WORD_SIZE    3120u    /* 8×8×195 / 4 = 3120 words */
-#define L20_OFM_WORD_OFFSET  693296u
-#define L20_OFM_WORD_SIZE    12480u   /* 16×16×195 / 4 = 12480 words */
-#define L8_OFM_WORD_SIZE     16384u   /* 256ch × 8 × 8 / 4 = 4096, wait: 256×8×8=16384 words */
+/* ── Per-layer OFM DRAM word offset (yolo_engine.v 의 *_OFM_BYTE_BASE >> 2) ──
+ * 두 detection head 의 OFM 만 후처리에 필요. 값이 RTL 테이블과 어긋나면
+ * 엉뚱한 DRAM 을 읽으므로 yolo_engine.v 수정 시 반드시 동기화할 것. */
+#define L14_OFM_WORD_OFFSET  811008u   /* 0x00318000 >> 2  (8×8 detection head) */
+#define L14_OFM_WORD_SIZE    3120u     /* 195 ch × 16 word/ch (4×4 2×2-packed blocks) */
+#define L20_OFM_WORD_OFFSET  860160u   /* 0x00348000 >> 2  (16×16 detection head) */
+#define L20_OFM_WORD_SIZE    12480u    /* 195 ch × 64 word/ch (8×8 2×2-packed blocks) */
 
 /* ── yolo_engine AXI-Lite 기준 주소 ── */
 #define ENGINE_BASE   XPAR_YOLO_ENGINE_IP_0_BASEADDR
@@ -97,7 +100,6 @@ static const uint8_t cCmdRecv[16]    = {' ',' ','C','M','D','_','R','e','c','e',
 static const uint8_t cComplete[16]   = {' ','S','t','o','r','e',' ','c','o','m','p','l','e','t','e',' '};
 static const uint8_t cEngineRun[16]  = {'E','n','g','i','n','e',' ','R','u','n',' ',' ',' ',' ',' ',' '};
 static const uint8_t cEngineDone[16] = {'E','n','g','i','n','e',' ','c','o','m','p','l','e','t','e',' '};
-static const uint8_t cConcatDone[16] = {'C','o','n','c','a','t',' ','D','o','n','e',' ',' ',' ',' ',' '};
 static const uint8_t cPostDone[16]   = {'P','o','s','t',' ','D','o','n','e',' ',' ',' ',' ',' ',' ',' '};
 static const uint8_t cError[16]      = {'E','R','R','O','R',' ',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '};
 
@@ -223,34 +225,36 @@ static void handle_run_engine(void) {
     uart_send(cEngineDone, 16);
 }
 
-/* ═══════════════════════════════════════════
- * MODE_CONCAT_L19 — L8 OFM → L19 concat 위치로 DRAM memcpy
- *   L19 IFM = L18 OFM(8192 words) + L8 OFM(16384 words) 연속 배치
- *   복사 전 yolo_engine 이 L18 까지 완료되어 있어야 함.
- *   (double-inference 전략: 1차 run 후 concat, 2차 run 으로 정확한 L20 결과 획득)
- * ═══════════════════════════════════════════ */
-static void handle_concat_l19(void) {
-    uint32_t src_base = DRAM_OFM_BASE + L8_OFM_WORD_OFFSET * 4u;
-    uint32_t dst_base = DRAM_OFM_BASE + (L18_OFM_WORD_OFFSET + L18_OFM_WORD_SIZE) * 4u;
-
-    /* 16,384 word = 65,536 byte 복사 */
-    for (uint32_t i = 0; i < L8_OFM_WORD_SIZE; i++) {
-        uint32_t val = read_addr_u32(src_base + i * 4u);
-        write_addr_u32(dst_base + i * 4u, val);
-    }
-    uart_send(cConcatDone, 16);
-}
+/* (MODE_CONCAT_L19 제거: RTL 이 L19 ROUTE concat 을 내부 DMA(S_L19_RP_*) 로 처리하므로
+ *  host-side memcpy + double-inference 불필요. 단일 RUN_ENGINE 으로 L20 까지 완료됨.) */
 
 /* ═══════════════════════════════════════════
  * YOLO 후처리 헬퍼
  * ═══════════════════════════════════════════ */
 static inline float sigmoid_f(float x) { return 1.0f / (1.0f + expf(-x)); }
 
-/* UINT8 출력값을 float logit 으로 역양자화.
- * post_process: output = clip(bias + acc >> shift, 0, 255)
- * 역: logit ≈ (val - 128) 를 근사 사용 (대칭 UINT8 기준).
- * 실제 정확도를 높이려면 per-layer scale 을 host 가 전달해야 함. */
-static inline float dequant(uint8_t val) { return (float)(int8_t)(val - 128u); }
+/* ── OFM de-pack 접근자 ──
+ * detection head OFM 은 DRAM 에 conv "2×2-packed, channel-major" 로 저장됨.
+ * grid G×G 채널 ch 의 (row,col) 픽셀 byte 위치 (l14/l20 verify TB 와 동일 식):
+ *   Wb = G/2
+ *   word index = ch*(Wb*Wb) + (row/2)*Wb + (col/2)
+ *   word = {p11,p10,p01,p00}  →  byte = (row%2)*2 + (col%2)  (p00 이 LSB)
+ * ofm 버퍼는 DRAM word 를 little-endian 으로 펼친 byte 배열. */
+static inline uint8_t ofm_raw(const uint8_t *ofm, int G, int ch, int row, int col) {
+    int Wb   = G >> 1;
+    int word = ch * (Wb * Wb) + (row >> 1) * Wb + (col >> 1);
+    int byte = ((row & 1) << 1) | (col & 1);
+    return ofm[word * 4 + byte];
+}
+
+/* INT8 signed raw → float logit (= skeleton 의 l.output = output_q / (I*W)).
+ * 하드웨어 저장값 = output_q / (I*W) * next_input_quant_multiplier 이므로
+ *   logit = stored / next_input_quant_multiplier.
+ *   L14(8×8): 다음 conv(L17) input scale = 8  → qscale = 8
+ *   L20(16×16): 다음 conv 없음           → qscale = 1 */
+static inline float dequant_logit(uint8_t raw, float qscale) {
+    return (float)(int8_t)raw / qscale;
+}
 
 typedef struct {
     float x, y, w, h;
@@ -275,74 +279,57 @@ static float box_iou(const Detection *a, const Detection *b) {
     return inter / (a->w * a->h + b->w * b->h - inter);
 }
 
-/* 한 YOLO head 의 OFM 을 파싱하여 g_dets 에 추가 */
+/* 한 YOLO [yolo] head 의 OFM 을 파싱하여 g_dets 에 추가.
+ *   grid    : 8 (L14) 또는 16 (L20) — 정사각 grid
+ *   qscale  : 역양자화 분모 (L14=8, L20=1)
+ *   anchors : 이 head 의 anchor 3쌍 (픽셀 단위, 256 입력 기준)
+ *
+ * skeleton forward_yolo_layer_cpu + get_yolo_box 정합:
+ *   tx,ty,obj,class = logistic(=sigmoid), tw,th = raw(exp).
+ *   x,y 는 grid 로, w,h 는 입력(256) 으로 정규화.
+ *   class 는 per-class sigmoid, det score = sigmoid(obj) × sigmoid(class). */
 static void parse_yolo_head(
-        const uint8_t *ofm,   /* UINT8 OFM 데이터 (NCHW, 4바이트 packed) */
-        int grid_w, int grid_h,
+        const uint8_t *ofm,
+        int grid, float qscale,
         const float anchors[][2])
 {
-    /* OFM layout: [channel][row][col], channel = anchor_idx * YOLO_ENTRY + entry_idx
-     * conv_top 은 4픽셀(2×2)씩 패킹하므로 word = {ch3,ch2,ch1,ch0} */
-    int n_spatial = grid_w * grid_h;
+    /* entry e 의 logit: channel = anchor*YOLO_ENTRY + e (anchor-major) */
+    #define YOLO_LOGIT(e) \
+        dequant_logit(ofm_raw(ofm, grid, an * YOLO_ENTRY + (e), row, col), qscale)
 
     for (int an = 0; an < N_ANCHORS_PER_HEAD; an++) {
         float aw = anchors[an][0];
         float ah = anchors[an][1];
 
-        for (int row = 0; row < grid_h; row++) {
-            for (int col = 0; col < grid_w; col++) {
-                int spatial = row * grid_w + col;
+        for (int row = 0; row < grid; row++) {
+            for (int col = 0; col < grid; col++) {
+                float obj = sigmoid_f(YOLO_LOGIT(4));
+                if (obj <= OBJ_THRESH) continue;   /* get_yolo_detections: if(obj>thresh) */
 
-                /* NCHW 에서 entry e 의 byte 인덱스
-                 * channel = an * YOLO_ENTRY + e
-                 * byte offset = channel * n_spatial + spatial */
-                #define YOLO_BYTE(e) \
-                    ofm[(an * YOLO_ENTRY + (e)) * n_spatial + spatial]
+                /* anchor box 디코딩 (get_yolo_box) */
+                float bx = ((float)col + sigmoid_f(YOLO_LOGIT(0))) / (float)grid;
+                float by = ((float)row + sigmoid_f(YOLO_LOGIT(1))) / (float)grid;
+                float bw = expf(YOLO_LOGIT(2)) * aw / INPUT_W;
+                float bh = expf(YOLO_LOGIT(3)) * ah / INPUT_H;
 
-                float tx = dequant(YOLO_BYTE(0));
-                float ty = dequant(YOLO_BYTE(1));
-                float tw = dequant(YOLO_BYTE(2));
-                float th = dequant(YOLO_BYTE(3));
-                float to = dequant(YOLO_BYTE(4));
-
-                float obj = sigmoid_f(to);
-                if (obj < OBJ_THRESH) continue;
-
-                /* anchor box 디코딩 */
-                float bx = (sigmoid_f(tx) + (float)col) / (float)grid_w;
-                float by = (sigmoid_f(ty) + (float)row) / (float)grid_h;
-                float bw = aw * expf(tw) / INPUT_W;
-                float bh = ah * expf(th) / INPUT_H;
-
-                /* 클래스 확률 softmax */
-                float cls[N_CLASSES];
-                float max_cls = -1e9f, sum_cls = 0.0f;
+                /* per-class sigmoid, score = obj × cls (best class 만 유지) */
+                int   best_cls = 0;
+                float best_p   = 0.0f;
                 for (int c = 0; c < N_CLASSES; c++) {
-                    cls[c] = dequant(YOLO_BYTE(5 + c));
-                    if (cls[c] > max_cls) max_cls = cls[c];
+                    float p = obj * sigmoid_f(YOLO_LOGIT(5 + c));
+                    if (p > best_p) { best_p = p; best_cls = c; }
                 }
-                for (int c = 0; c < N_CLASSES; c++) {
-                    cls[c] = expf(cls[c] - max_cls);
-                    sum_cls += cls[c];
-                }
-                int best_cls = 0;
-                float best_p = 0.0f;
-                for (int c = 0; c < N_CLASSES; c++) {
-                    cls[c] /= sum_cls;
-                    if (cls[c] > best_p) { best_p = cls[c]; best_cls = c; }
-                }
-                #undef YOLO_BYTE
 
-                float score = obj * best_p;
-                if (score < OBJ_THRESH) continue;
-                if (g_n_dets >= MAX_DETS) continue;
+                if (best_p <= OBJ_THRESH) continue;
+                if (g_n_dets >= MAX_DETS)  continue;
 
                 Detection *d = &g_dets[g_n_dets++];
                 d->x = bx; d->y = by; d->w = bw; d->h = bh;
-                d->obj = obj; d->score = score; d->cls_id = best_cls;
+                d->obj = obj; d->score = best_p; d->cls_id = best_cls;
             }
         }
     }
+    #undef YOLO_LOGIT
 }
 
 /* ═══════════════════════════════════════════
@@ -367,7 +354,7 @@ static void handle_yolo_post(void) {
         g_ofm_buf[i * 4 + 2] = (uint8_t)((w >>16) & 0xFF);
         g_ofm_buf[i * 4 + 3] = (uint8_t)((w >>24) & 0xFF);
     }
-    parse_yolo_head(g_ofm_buf, 8, 8, g_anchors_l14);
+    parse_yolo_head(g_ofm_buf, 8, 8.0f, g_anchors_l14);   /* qscale=8 (next conv input scale) */
 
     /* ── L20 OFM 읽기 (16×16 grid, 12480 words = 49920 bytes) ── */
     uint32_t l20_base = DRAM_OFM_BASE + L20_OFM_WORD_OFFSET * 4u;
@@ -378,7 +365,7 @@ static void handle_yolo_post(void) {
         g_ofm_buf[i * 4 + 2] = (uint8_t)((w >>16) & 0xFF);
         g_ofm_buf[i * 4 + 3] = (uint8_t)((w >>24) & 0xFF);
     }
-    parse_yolo_head(g_ofm_buf, 16, 16, g_anchors_l20);
+    parse_yolo_head(g_ofm_buf, 16, 1.0f, g_anchors_l20);  /* qscale=1 (마지막 conv, next=1) */
 
     /* ── 클래스별 NMS ── */
     for (int c = 0; c < N_CLASSES; c++) {
@@ -466,9 +453,6 @@ int main(void) {
 
         } else if (mode == MODE_RUN_ENGINE) {
             handle_run_engine();
-
-        } else if (mode == MODE_CONCAT_L19) {
-            handle_concat_l19();
 
         } else if (mode == MODE_YOLO_POST) {
             handle_yolo_post();
