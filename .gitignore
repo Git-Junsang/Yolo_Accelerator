@@ -35,8 +35,8 @@ skeleton/src/*.o
 .DS_Store
 Thumbs.db
 
-# iverilog 컴파일 출력 (yolohw/sim/ 전용)
-yolohw/sim/
+# iverilog 컴파일 출력 (hardware/sim/ 전용)
+hardware/sim/
 
 # 소프트 삭제 보관함
 .recycle_bin/
@@ -49,6 +49,10 @@ src_original/
 
 # 제출 가이드 (대회 제공 PDF + 직접 작성 제출물 가이드, 로컬 보관만)
 documents/submission_guide/
+
+# 제출물(대용량 zip 포함) + 학부생 학습 해설서 (로컬 보관만, git 비추적)
+documents/submission/
+documents/study_guide/
 
 # Python bytecode 캐시 (재생성 가능)
 __pycache__/
