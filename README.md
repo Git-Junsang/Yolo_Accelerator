@@ -143,7 +143,6 @@ Yolo_Accelerator/
 │   └── tutorial_guide/        # Contest-provided SDK / Vivado tutorial PDFs
 │
 ├── ARCHITECTURE.md            # Detailed architecture spec (network, module hierarchy, memory map)
-├── CLAUDE.md                  # Work guide + critical-error rules
 ├── README.md                  # This file
 └── README.ko.md
 ```
@@ -281,12 +280,12 @@ python host.py --port /dev/ttyUSB1 --image test02.jpg --skip-weights
 
 ### Documents
 
-| Path                               | Contents                                                                      |
-| ---------------------------------- | ----------------------------------------------------------------------------- |
-| `documents/technical_reference/` | 16-chapter technical reference (yolo_engine, conv engine, DMA, timing)        |
-| `documents/tutorial_guide/`      | Contest-provided SDK install / quantization / Vivado / MAC-BRAM manuals       |
-| `ARCHITECTURE.md`                | Detailed spec — network, module hierarchy, FSM flow, DRAM map                |
-| `CLAUDE.md`                      | Work guide + 8 critical-error-prevention rules                                |
+| Path                               | Contents                                                                |
+| ---------------------------------- | ----------------------------------------------------------------------- |
+| `documents/technical_reference/` | 16-chapter technical reference (yolo_engine, conv engine, DMA, timing)  |
+| `documents/tutorial_guide/`      | Contest-provided SDK install / quantization / Vivado / MAC-BRAM manuals |
+| `ARCHITECTURE.md`                | Detailed spec — network, module hierarchy, FSM flow, DRAM map          |
+| `CLAUDE.md`                      | Work guide + 8 critical-error-prevention rules                          |
 
 ### Design notes
 

@@ -143,7 +143,6 @@ Yolo_Accelerator/
 │   └── tutorial_guide/        # 대회 제공 SDK / Vivado 튜토리얼 PDF
 │
 ├── ARCHITECTURE.md            # 상세 아키텍처 스펙 (네트워크, 모듈 계층, 메모리 맵)
-├── CLAUDE.md                  # 작업 가이드 + 치명적 에러 방지 규칙
 ├── README.md
 └── README.ko.md               # 본 문서
 ```
@@ -281,12 +280,12 @@ python host.py --port /dev/ttyUSB1 --image test02.jpg --skip-weights
 
 ### 문서
 
-| 경로                               | 내용                                                                   |
-| ---------------------------------- | ---------------------------------------------------------------------- |
-| `documents/technical_reference/` | 16장 기술 레퍼런스 (yolo_engine, conv 엔진, DMA, 타이밍)               |
-| `documents/tutorial_guide/`      | 대회 제공 SDK 설치 / 양자화 / Vivado / MAC-BRAM 매뉴얼                 |
-| `ARCHITECTURE.md`                | 상세 스펙 — 네트워크, 모듈 계층, FSM 흐름, DRAM 맵                    |
-| `CLAUDE.md`                      | 작업 가이드 + 치명적 에러 방지 규칙 8가지                              |
+| 경로                               | 내용                                                     |
+| ---------------------------------- | -------------------------------------------------------- |
+| `documents/technical_reference/` | 16장 기술 레퍼런스 (yolo_engine, conv 엔진, DMA, 타이밍) |
+| `documents/tutorial_guide/`      | 대회 제공 SDK 설치 / 양자화 / Vivado / MAC-BRAM 매뉴얼   |
+| `ARCHITECTURE.md`                | 상세 스펙 — 네트워크, 모듈 계층, FSM 흐름, DRAM 맵      |
+| `CLAUDE.md`                      | 작업 가이드 + 치명적 에러 방지 규칙 8가지                |
 
 ### 설계 노트
 
